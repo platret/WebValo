@@ -69,12 +69,12 @@ function buildMap(scene) {
   const colliders = []; // AABB boxes for player + bullet collision
   const shootables = []; // meshes raycast for bullets
 
-  const matFloor = new THREE.MeshStandardMaterial({ color: 0x2a3440, roughness: 0.95 });
-  const matWall = new THREE.MeshStandardMaterial({ color: 0x3a4754, roughness: 0.9 });
-  const matCrate = new THREE.MeshStandardMaterial({ color: 0x4d5a68, roughness: 0.85 });
+  const matFloor = new THREE.MeshStandardMaterial({ color: 0x3d4a57, roughness: 0.95 });
+  const matWall = new THREE.MeshStandardMaterial({ color: 0x5a6b7d, roughness: 0.9 });
+  const matCrate = new THREE.MeshStandardMaterial({ color: 0x76879b, roughness: 0.85 });
   const matAccent = new THREE.MeshStandardMaterial({ color: 0xff4655, emissive: 0xff4655, emissiveIntensity: 0.55 });
   const matTeal = new THREE.MeshStandardMaterial({ color: 0x53d9d1, emissive: 0x53d9d1, emissiveIntensity: 0.5 });
-  const matDark = new THREE.MeshStandardMaterial({ color: 0x1c242e, roughness: 1 });
+  const matDark = new THREE.MeshStandardMaterial({ color: 0x4d5b69, roughness: 1 });
 
   function box(w, h, d, x, y, z, mat = matCrate, solid = true) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -147,21 +147,21 @@ function buildMap(scene) {
   }
 
   // lighting
-  scene.fog = new THREE.FogExp2(0x0f1923, 0.016);
-  scene.background = new THREE.Color(0x101b26);
-  const hemi = new THREE.HemisphereLight(0x9db8d0, 0x141c26, 0.85);
+  scene.fog = new THREE.FogExp2(0x141f2b, 0.014);
+  scene.background = new THREE.Color(0x16222e);
+  const hemi = new THREE.HemisphereLight(0xbdd4e8, 0x46525e, 1.6);
   scene.add(hemi);
-  const sun = new THREE.DirectionalLight(0xffe8d0, 1.4);
+  const sun = new THREE.DirectionalLight(0xffe8d0, 3.2);
   sun.position.set(20, 32, 12);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.camera.left = -40; sun.shadow.camera.right = 40;
   sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -40;
   scene.add(sun);
-  const redGlow = new THREE.PointLight(0xff4655, 18, 26);
+  const redGlow = new THREE.PointLight(0xff4655, 6, 22);
   redGlow.position.set(-18, 3, -18);
   scene.add(redGlow);
-  const tealGlow = new THREE.PointLight(0x53d9d1, 18, 26);
+  const tealGlow = new THREE.PointLight(0x53d9d1, 6, 22);
   tealGlow.position.set(18, 3, 18);
   scene.add(tealGlow);
 
@@ -256,6 +256,7 @@ export class Game {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.25;
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(74, 1, 0.05, 300);
@@ -268,7 +269,7 @@ export class Game {
     // player state
     this.pos = new THREE.Vector3(0, PLAYER_HEIGHT, 24);
     this.vel = new THREE.Vector3();
-    this.yaw = Math.PI; this.pitch = 0;
+    this.yaw = 0; this.pitch = 0; // yaw 0 faces -z, toward arena center
     this.onGround = true;
     this.hp = 100; this.armor = 50;
     this.dead = false; this.deadUntil = 0;
@@ -314,7 +315,7 @@ export class Game {
   // ---------------- viewmodel
   buildViewmodel() {
     this.viewmodel = new THREE.Group();
-    const gunMat = new THREE.MeshStandardMaterial({ color: 0x2c3845, roughness: 0.5, metalness: 0.6 });
+    const gunMat = new THREE.MeshStandardMaterial({ color: 0x2c3845, roughness: 0.5, metalness: 0.4, emissive: 0x131b26, emissiveIntensity: 1 });
     const accent = new THREE.MeshStandardMaterial({ color: new THREE.Color(this.agent.color), emissive: new THREE.Color(this.agent.color), emissiveIntensity: 0.8 });
     const body = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.12, 0.5), gunMat);
     const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.3, 8), gunMat);
@@ -324,9 +325,16 @@ export class Game {
     this.muzzle = new THREE.PointLight(0xffd9a0, 0, 4);
     this.muzzle.position.set(0, 0.03, -0.55);
     this.viewmodel.add(body, barrel, stripe, this.muzzle);
-    this.viewmodel.position.set(0.28, -0.24, -0.5);
-    this.camera.add(this.viewmodel);
-    this.scene.add(this.camera);
+    this.viewmodel.scale.setScalar(0.62);
+    this.viewmodel.traverse((o) => { o.frustumCulled = false; });
+    // Dedicated overlay pass: own scene + camera, rendered after the world with a depth clear.
+    // Keeps the gun out of world geometry and immune to fog/frustum issues.
+    this.vmZ = -0.45;
+    this.viewmodel.position.set(0.26, -0.22, this.vmZ);
+    this.vmScene = new THREE.Scene();
+    this.vmScene.add(this.viewmodel);
+    this.vmScene.add(new THREE.HemisphereLight(0xbdd4e8, 0x46525e, 2.2));
+    this.vmCamera = new THREE.PerspectiveCamera(62, 1, 0.01, 10);
   }
 
   // ---------------- input
@@ -370,6 +378,9 @@ export class Game {
 
   locked() { return document.pointerLockElement === this.canvas; }
 
+  // Pointer lock can be rejected (no user gesture, sandboxed iframe) — never let that throw.
+  lock() { try { this.canvas.requestPointerLock()?.catch?.(() => {}); } catch { /* ignored */ } }
+
   onKey(e, down) {
     if (!this.running) return;
     this.keys[e.code] = down;
@@ -389,7 +400,7 @@ export class Game {
   setPaused(p) {
     this.paused = p;
     document.getElementById('pause-menu').classList.toggle('hidden', !p);
-    if (!p) this.canvas.requestPointerLock();
+    if (!p) this.lock();
   }
 
   toggleBuy() {
@@ -397,12 +408,12 @@ export class Game {
     const open = menu.classList.contains('hidden');
     menu.classList.toggle('hidden', !open);
     if (open) { document.exitPointerLock(); this.paused = true; document.getElementById('pause-menu').classList.add('hidden'); }
-    else { this.paused = false; this.canvas.requestPointerLock(); }
+    else { this.paused = false; this.lock(); }
   }
 
   start() {
     this.running = true;
-    this.canvas.requestPointerLock();
+    this.lock();
     this.clock.start();
     this.loop();
     this.announce('MATCH START', false);
@@ -413,6 +424,10 @@ export class Game {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    if (this.vmCamera) {
+      this.vmCamera.aspect = w / h;
+      this.vmCamera.updateProjectionMatrix();
+    }
   }
 
   randomSpawn() {
@@ -452,7 +467,7 @@ export class Game {
 
     this.recoilKick = Math.min(this.recoilKick + this.weapon.recoil, 0.09);
     this.muzzle.intensity = 14;
-    this.viewmodel.position.z = -0.44;
+    this.vmZ = -0.38;
     this.sfx.play('shot');
     this.updateHud();
   }
@@ -789,7 +804,7 @@ export class Game {
     this.pos.copy(this.randomSpawn()).setY(PLAYER_HEIGHT);
     this.vel.set(0, 0, 0);
     document.getElementById('death-screen').classList.add('hidden');
-    this.canvas.requestPointerLock();
+    this.lock();
     this.updateHud();
   }
 
@@ -820,13 +835,19 @@ export class Game {
     this.camera.quaternion.setFromEuler(new THREE.Euler(this.pitch + this.recoilKick, this.yaw, 0, 'YXZ'));
     this.recoilKick = Math.max(0, this.recoilKick - dt * 0.35);
     this.muzzle.intensity = Math.max(0, this.muzzle.intensity - dt * 160);
-    this.viewmodel.position.z += (-0.5 - this.viewmodel.position.z) * dt * 14;
+    this.vmZ += (-0.45 - this.vmZ) * dt * 14;
     // subtle weapon bob
     const speed2d = Math.hypot(this.vel.x, this.vel.z);
     this._bob = (this._bob || 0) + dt * speed2d * 1.6;
-    this.viewmodel.position.y = -0.24 + Math.sin(this._bob) * 0.006 * Math.min(speed2d, 6);
+    const bobY = Math.sin(this._bob) * 0.006 * Math.min(speed2d, 6);
+    this.viewmodel.position.set(0.26, -0.22 + bobY, this.vmZ);
+    this.viewmodel.visible = !this.dead;
 
     this.renderer.render(this.scene, this.camera);
+    this.renderer.clearDepth();
+    this.renderer.autoClear = false;
+    this.renderer.render(this.vmScene, this.vmCamera);
+    this.renderer.autoClear = true;
   }
 
   updatePlayer(dt, t) {

@@ -158,6 +158,7 @@ function startMatch() {
   game = new Game($('#game-canvas'), selectedAgent, {
     onKillFeed, onScore, onAnnounce, onAbilityHud, onQuickBuy,
   });
+  window.__game = game; // debug handle
   game.updateHud();
   game.start();
 
