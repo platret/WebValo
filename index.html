@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WEBVALO — Tactical Browser Shooter</title>
+<meta name="description" content="A Valorant-inspired tactical FPS that runs entirely in your browser. Pick an agent, buy your loadout, defend the spike site." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="css/style.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><polygon points='10,15 45,15 45,85' fill='%23ff4655'/><polygon points='90,15 55,15 55,85' fill='%23ece8e1'/></svg>" />
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+
+<!-- ============ LANDING ============ -->
+<section id="screen-landing" class="screen active">
+  <div class="bg-grid"></div>
+  <div class="bg-glow"></div>
+  <div class="landing-deco-text">PROTOCOL // 781-A</div>
+  <header class="landing-top">
+    <div class="logo-mark"></div>
+    <div class="top-meta">
+      <span class="meta-chip">BUILD 1.0</span>
+      <span class="meta-chip red">REGION: BROWSER</span>
+    </div>
+  </header>
+  <div class="landing-center">
+    <h1 class="landing-title">
+      <span class="title-line">WEB</span><span class="title-line red">VALO</span>
+    </h1>
+    <p class="landing-sub">TACTICAL SHOOTER // NO INSTALL // NO QUEUE</p>
+    <button id="btn-play" class="btn-primary">
+      <span class="btn-text">PLAY</span>
+      <span class="btn-arrow">▸</span>
+    </button>
+    <div class="landing-hints">
+      <span>WASD MOVE</span><i></i><span>SHIFT WALK</span><i></i><span>B BUY</span><i></i><span>Q / E / C / X ABILITIES</span>
+    </div>
+  </div>
+  <footer class="landing-bottom">
+    <span>FAN-MADE TRIBUTE — NOT AFFILIATED WITH RIOT GAMES</span>
+    <span class="mono">// FPS.SYS READY_</span>
+  </footer>
+</section>
+
+<!-- ============ AGENT SELECT ============ -->
+<section id="screen-agents" class="screen">
+  <div class="bg-grid"></div>
+  <header class="select-header">
+    <button id="btn-back-landing" class="btn-ghost">◂ BACK</button>
+    <h2 class="select-title">SELECT YOUR <em>AGENT</em></h2>
+    <div class="select-timer mono" id="select-timer">∞</div>
+  </header>
+  <div class="select-body">
+    <div class="agent-rail" id="agent-rail"><!-- cards injected --></div>
+    <aside class="agent-detail" id="agent-detail"><!-- detail injected --></aside>
+  </div>
+  <footer class="select-footer">
+    <div class="map-pick">
+      <span class="map-label">MAP</span>
+      <div class="map-card">
+        <div class="map-thumb"></div>
+        <div class="map-info"><strong>FORGE</strong><span>INDUSTRIAL DISTRICT — 2 SITES</span></div>
+        <span class="map-locked mono">1/1</span>
+      </div>
+    </div>
+    <button id="btn-lock" class="btn-primary big" disabled>
+      <span class="btn-text">LOCK IN</span><span class="btn-arrow">▸</span>
+    </button>
+  </footer>
+</section>
+
+<!-- ============ GAME ============ -->
+<section id="screen-game" class="screen">
+  <canvas id="game-canvas"></canvas>
+
+  <!-- HUD -->
+  <div id="hud" class="hud hidden">
+    <div class="crosshair" id="crosshair"><i></i><i></i><i></i><i></i><b id="hitmarker"></b></div>
+
+    <div class="hud-top">
+      <div class="scoreboard">
+        <div class="score ally" id="score-ally">0</div>
+        <div class="round-clock mono" id="round-clock">∞</div>
+        <div class="score enemy" id="score-enemy">0</div>
+      </div>
+    </div>
+
+    <div class="killfeed" id="killfeed"></div>
+
+    <div class="hud-bottom-left">
+      <div class="hp-block">
+        <div class="hp-num" id="hp-num">100</div>
+        <div class="hp-bar"><div class="hp-fill" id="hp-fill"></div></div>
+        <div class="armor-bar"><div class="armor-fill" id="armor-fill"></div></div>
+      </div>
+      <div class="money mono" id="money">$∞</div>
+    </div>
+
+    <div class="hud-bottom-center">
+      <div class="abilities" id="ability-bar"><!-- injected --></div>
+    </div>
+
+    <div class="hud-bottom-right">
+      <div class="weapon-name" id="weapon-name">CLASSIC</div>
+      <div class="ammo"><span id="ammo-mag">12</span><span class="ammo-res mono" id="ammo-reserve">/ ∞</span></div>
+    </div>
+
+    <div class="announce" id="announce"></div>
+    <div class="damage-vignette" id="damage-vignette"></div>
+    <div class="flash-overlay" id="flash-overlay"></div>
+    <div class="ult-overlay" id="ult-overlay"></div>
+  </div>
+
+  <!-- BUY MENU -->
+  <div id="buy-menu" class="buy-menu hidden">
+    <div class="buy-head">
+      <h3>ARMORY <em>// UNLIMITED CREDITS</em></h3>
+      <span class="mono buy-money">$∞</span>
+    </div>
+    <div class="buy-grid" id="buy-grid"><!-- injected --></div>
+    <div class="buy-foot mono">PRESS <b>B</b> TO CLOSE — NUMBER KEYS TO QUICK-BUY</div>
+  </div>
+
+  <!-- PAUSE -->
+  <div id="pause-menu" class="pause-menu hidden">
+    <div class="pause-box">
+      <h3>PAUSED</h3>
+      <button id="btn-resume" class="btn-primary"><span class="btn-text">RESUME</span><span class="btn-arrow">▸</span></button>
+      <button id="btn-quit" class="btn-ghost">QUIT TO MENU</button>
+    </div>
+  </div>
+
+  <!-- DEATH -->
+  <div id="death-screen" class="death-screen hidden">
+    <div class="death-box">
+      <h3>YOU DIED</h3>
+      <p class="mono" id="death-info">RESPAWNING…</p>
+    </div>
+  </div>
+</section>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
