@@ -3,6 +3,7 @@
 
 import * as THREE from 'three';
 import { getWeapon, BLADE_STORM } from './weapons.js';
+import { CLIPS } from './models.js';
 
 const BOT_COUNT = 5;
 const PLAYER_HEIGHT = 1.7;
@@ -178,12 +179,17 @@ function buildMap(scene) {
 // ---------------------------------------------------------------- bots
 const BOT_NAMES = ['REYNA-BOT', 'PHX-UNIT', 'OMEN-77', 'CYPHER.EXE', 'KAYO-MK2', 'VIPER-X', 'SAGE-9000'];
 
+// KayKit characters face +Z; combined with group.lookAt this points them at
+// their target. Flip to 0 if a model ends up facing backwards.
+const BOT_MODEL_YAW = Math.PI;
+
 class Bot {
-  constructor(scene, spawn, name) {
+  constructor(scene, spawn, name, asset = null) {
     this.name = name;
     this.hp = 100;
     this.alive = true;
     this.respawnAt = 0;
+    this.hideAt = 0;
     this.shootCooldown = 0;
     this.wanderTarget = null;
     this.flashUntil = 0;
@@ -193,27 +199,76 @@ class Bot {
     const headMat = new THREE.MeshStandardMaterial({ color: 0xff4655, roughness: 0.4, emissive: 0xff4655, emissiveIntensity: 0.35 });
 
     this.group = new THREE.Group();
+    // Body + head double as the bullet hitboxes. When a glTF model is shown they
+    // become invisible (material.visible=false) but stay raycastable — so all the
+    // existing headshot logic keeps working unchanged.
     this.body = new THREE.Mesh(new THREE.CapsuleGeometry(0.38, 0.85, 4, 10), bodyMat);
     this.body.position.y = 0.85;
     this.body.castShadow = true;
     this.head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 12), headMat);
     this.head.position.y = 1.62;
     this.head.castShadow = true;
-    // visor stripe so the head reads as a face
-    const visor = new THREE.Mesh(
+    this.visor = new THREE.Mesh(
       new THREE.BoxGeometry(0.34, 0.07, 0.1),
       new THREE.MeshStandardMaterial({ color: 0x53d9d1, emissive: 0x53d9d1, emissiveIntensity: 1.4 })
     );
-    visor.position.set(0, 1.64, 0.2);
-    this.group.add(this.body, this.head, visor);
+    this.visor.position.set(0, 1.64, 0.2);
+    this.group.add(this.body, this.head, this.visor);
     this.body.userData.bot = this; this.body.userData.part = 'body';
     this.head.userData.bot = this; this.head.userData.part = 'head';
     this.group.position.copy(spawn);
+
+    // ---- animated glTF skeleton (optional visual) ----
+    this.mixer = null;
+    this.actions = {};
+    this.current = null;
+    this.skinMeshes = [];
+    if (asset && asset.model) {
+      const m = asset.model;
+      // normalize to ~1.85 tall, feet on the ground
+      const h = new THREE.Box3().setFromObject(m).getSize(new THREE.Vector3()).y || 1.7;
+      m.scale.setScalar(1.85 / h);
+      m.position.y -= new THREE.Box3().setFromObject(m).min.y;
+      m.traverse((o) => { if (o.isMesh) this.skinMeshes.push(o); });
+      this.modelWrap = new THREE.Group();
+      this.modelWrap.rotation.y = BOT_MODEL_YAW;
+      this.modelWrap.add(m);
+      this.group.add(this.modelWrap);
+      // hide the hitbox meshes (still raycast — Raycaster honors Object3D.visible,
+      // which stays true; only the material is hidden)
+      for (const hb of [this.body, this.head, this.visor]) { hb.material.visible = false; hb.castShadow = false; }
+      this.mixer = new THREE.AnimationMixer(m);
+      for (const [key, clipName] of Object.entries(CLIPS)) {
+        const clip = asset.animations.find((a) => a.name === clipName);
+        if (clip) this.actions[key] = this.mixer.clipAction(clip);
+      }
+      this.playAction('idle');
+    }
     scene.add(this.group);
   }
 
+  // Crossfade to a named animation state.
+  playAction(key, { once = false } = {}) {
+    const a = this.actions[key];
+    if (!a || a === this.current) return;
+    a.reset().setEffectiveWeight(1);
+    a.setLoop(once ? THREE.LoopOnce : THREE.LoopRepeat, once ? 1 : Infinity);
+    a.clampWhenFinished = once;
+    a.fadeIn(0.18).play();
+    if (this.current) this.current.fadeOut(0.18);
+    this.current = a;
+  }
+
   setRevealed(on) {
-    // Recon reveal — render through walls with a hot outline-ish glow.
+    // Recon reveal — render through walls with a hot glow.
+    if (this.skinMeshes.length) {
+      for (const o of this.skinMeshes) {
+        o.material.depthTest = !on;
+        o.material.emissiveIntensity = on ? 2.4 : 0.5;
+        o.renderOrder = on ? 999 : 0;
+      }
+      return;
+    }
     for (const m of [this.body, this.head]) {
       m.material.depthTest = !on;
       m.material.emissiveIntensity = on ? 2.2 : (m === this.head ? 0.35 : 0.6);
@@ -230,8 +285,15 @@ class Bot {
 
   die() {
     this.alive = false;
-    this.respawnAt = performance.now() / 1000 + RESPAWN_DELAY + Math.random() * 2;
-    this.group.visible = false;
+    const now = performance.now() / 1000;
+    this.respawnAt = now + RESPAWN_DELAY + Math.random() * 2;
+    if (this.mixer) {
+      this.current = null; // force the crossfade
+      this.playAction('death', { once: true });
+      this.hideAt = now + 1.6; // linger so the death animation plays out
+    } else {
+      this.group.visible = false; // procedural fallback: vanish as before
+    }
   }
 
   respawn(spawn) {
@@ -239,6 +301,7 @@ class Bot {
     this.alive = true;
     this.group.position.copy(spawn);
     this.group.visible = true;
+    if (this.mixer) { this.current = null; this.playAction('idle'); }
     this.setRevealed(false);
   }
 }
@@ -303,10 +366,13 @@ export class Game {
     this.running = false;
     this.clock = new THREE.Clock();
 
-    // bots
+    // bots — each gets its own tinted skeleton clone from the shared download
     this.bots = [];
     for (let i = 0; i < BOT_COUNT; i++) {
-      this.bots.push(new Bot(this.scene, this.randomSpawn(), BOT_NAMES[i % BOT_NAMES.length]));
+      const asset = this.models ? this.models.skeleton(0x6a1414) : null;
+      const bot = new Bot(this.scene, this.randomSpawn(), BOT_NAMES[i % BOT_NAMES.length], asset);
+      if (bot.mixer) this.mixers.push(bot.mixer);
+      this.bots.push(bot);
     }
 
     this.buildViewmodel();
@@ -774,11 +840,29 @@ export class Game {
   }
 
   deployDecoy() {
-    const mat = new THREE.MeshStandardMaterial({ color: 0x7d8cff, transparent: true, opacity: 0.75, emissive: 0x3b4bd8, emissiveIntensity: 0.6 });
-    const m = new THREE.Mesh(new THREE.CapsuleGeometry(0.38, 0.85, 4, 10), mat);
-    m.position.copy(this.pos).setY(0.85).add(this.flatAimDir().multiplyScalar(1.2));
+    let m = null, mixer = null;
+    // Use the agent's own glTF body as the decoy when available.
+    const c = this.models ? this.models.character() : null;
+    if (c && c.model) {
+      const model = c.model;
+      const h = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).y || 1.7;
+      model.scale.setScalar(1.8 / h);
+      model.position.y -= new THREE.Box3().setFromObject(model).min.y;
+      model.traverse((o) => { if (o.isMesh) { o.material.emissive = new THREE.Color(0x3b4bd8); o.material.emissiveIntensity = 0.8; o.frustumCulled = false; } });
+      m = new THREE.Group();
+      m.rotation.y = BOT_MODEL_YAW;
+      m.add(model);
+      const idle = c.animations.find((a) => a.name === CLIPS.idle);
+      if (idle) { mixer = new THREE.AnimationMixer(model); mixer.clipAction(idle).play(); this.mixers.push(mixer); }
+    }
+    if (!m) {
+      const mat = new THREE.MeshStandardMaterial({ color: 0x7d8cff, transparent: true, opacity: 0.75, emissive: 0x3b4bd8, emissiveIntensity: 0.6 });
+      m = new THREE.Mesh(new THREE.CapsuleGeometry(0.38, 0.85, 4, 10), mat);
+    }
+    const base = this.pos.clone().add(this.flatAimDir().multiplyScalar(1.2));
+    m.position.set(base.x, mixer ? 0 : 0.85, base.z);
     this.scene.add(m);
-    this.effects.push({ mesh: m, until: this.now() + 6, decoy: true, vel: this.flatAimDir().multiplyScalar(3) });
+    this.effects.push({ mesh: m, until: this.now() + 6, decoy: true, mixer, vel: this.flatAimDir().multiplyScalar(3) });
   }
 
   deployDrone() {
@@ -930,6 +1014,7 @@ export class Game {
 
     for (const b of this.bots) {
       if (!b.alive) {
+        if (b.mixer && b.hideAt && t > b.hideAt) b.group.visible = false;
         if (t >= b.respawnAt) b.respawn(this.randomSpawn());
         continue;
       }
@@ -944,7 +1029,8 @@ export class Game {
       if (playerVisible && dist < 30) {
         // face & strafe-approach
         b.group.lookAt(this.pos.x, b.group.position.y, this.pos.z);
-        if (dist > 9) b.group.position.add(toTarget.normalize().multiplyScalar(b.speed * dt));
+        if (dist > 9) { b.group.position.add(toTarget.normalize().multiplyScalar(b.speed * dt)); b.playAction('run'); }
+        else b.playAction('idle');
         b.shootCooldown -= dt;
         if (b.shootCooldown <= 0 && dist < 26) {
           b.shootCooldown = 0.55 + Math.random() * 0.7;
@@ -961,6 +1047,7 @@ export class Game {
         const dir = b.wanderTarget.clone().setY(0).sub(b.group.position.clone().setY(0)).normalize();
         b.group.position.add(dir.multiplyScalar(b.speed * 0.55 * dt));
         b.group.lookAt(b.wanderTarget.x, b.group.position.y, b.wanderTarget.z);
+        b.playAction('run');
       }
 
       // keep inside arena
@@ -1034,7 +1121,7 @@ export class Game {
     for (let i = this.effects.length - 1; i >= 0; i--) {
       const e = this.effects[i];
       if (e.grow) e.mesh.scale.addScalar(dt * 4);
-      if (e.mesh.material.transparent && e.grow) e.mesh.material.opacity = Math.max(0, e.mesh.material.opacity - dt * 2);
+      if (e.grow && e.mesh.material && e.mesh.material.transparent) e.mesh.material.opacity = Math.max(0, e.mesh.material.opacity - dt * 2);
       if (e.decoy && e.vel) { e.mesh.position.add(e.vel.clone().multiplyScalar(dt)); e.vel.multiplyScalar(0.98); }
       if (e.drone && e.vel) {
         e.mesh.position.add(e.vel.clone().multiplyScalar(dt));
@@ -1045,6 +1132,7 @@ export class Game {
       }
       if (t >= e.until) {
         if (e.drone) for (const b of this.bots) { if (this.reveal.until < t) b.setRevealed(false); }
+        if (e.mixer) { const mi = this.mixers.indexOf(e.mixer); if (mi >= 0) this.mixers.splice(mi, 1); }
         this.scene.remove(e.mesh);
         this.effects.splice(i, 1);
       }
