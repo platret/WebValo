@@ -95,22 +95,32 @@ function buildAbilityBar(agent) {
   bar.innerHTML = slots.map((k) => {
     const ab = agent.abilities[k];
     const ult = k === 'X';
+    const charges = ab.charges || 1;
     return `<div class="ability ${ult ? 'ult' : 'ready'}" id="ab-${k}" title="${ab.name}">
       <span class="ic">${ab.icon}</span>
       <span class="kb">${k}</span>
       <span class="cd" id="cd-${k}"></span>
+      ${charges > 1 ? `<span class="charge-badge" id="ch-${k}">${charges}</span>` : ''}
       ${ult ? `<span class="ult-pips">${Array.from({ length: ab.pts }, (_, i) => `<span class="pip" id="pip-${i}"></span>`).join('')}</span>` : ''}
     </div>`;
   }).join('');
 }
 
-function onAbilityHud(cooldowns, ultPoints, now) {
+function onAbilityHud(abilityState, ultPoints, now) {
   for (const k of ['C', 'Q', 'E']) {
     const el = $(`#ab-${k}`);
-    const remaining = cooldowns[k] - now;
-    el.classList.toggle('cooling', remaining > 0);
-    el.classList.toggle('ready', remaining <= 0);
-    $(`#cd-${k}`).textContent = remaining > 0 ? Math.ceil(remaining) : '';
+    const st = abilityState[k] || { count: 0, max: 1, pending: [] };
+    const remaining = st.pending.length && st.count < st.max ? st.pending[0] - now : 0;
+    // "cooling" only when no charges are left to use; with charges spare it stays usable
+    el.classList.toggle('cooling', st.count <= 0 && remaining > 0);
+    el.classList.toggle('ready', st.count > 0);
+    $(`#cd-${k}`).textContent = st.count <= 0 && remaining > 0 ? Math.ceil(remaining) : '';
+    const badge = $(`#ch-${k}`);
+    if (badge) {
+      badge.textContent = st.count;
+      badge.classList.toggle('depleted', st.count <= 0);
+      badge.classList.toggle('partial', st.count > 0 && st.count < st.max);
+    }
   }
   const ultAb = selectedAgent.abilities.X;
   const ultEl = $('#ab-X');
@@ -193,7 +203,7 @@ async function startMatch() {
     // ability cooldown ticker (cheap DOM updates outside the render loop)
     clearInterval(window._hudTick);
     window._hudTick = setInterval(() => {
-      if (game && game.running) onAbilityHud(game.cooldowns, game.ultPoints, game.now());
+      if (game && game.running) onAbilityHud(game.abilityState, game.ultPoints, game.now());
     }, 250);
   };
 }

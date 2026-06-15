@@ -361,8 +361,17 @@ export class Game {
     this.lastShot = 0;
     this.recoilKick = 0;
 
-    // abilities
+    // abilities — each slot tracks charges that recharge independently in
+    // parallel (e.g. Raze's 2 Blast Packs: use one, it recharges while the other
+    // stays ready; use both, both recharge at once). `cooldowns` mirrors the
+    // soonest pending recharge time, kept only for the HUD countdown.
+    this.abilityState = {};
     this.cooldowns = { C: 0, Q: 0, E: 0 };
+    for (const slot of ['C', 'Q', 'E']) {
+      const ab = agent.abilities[slot];
+      const max = (ab && ab.charges) || 1;
+      this.abilityState[slot] = { count: max, max, cd: (ab && ab.cd) || 0, pending: [] };
+    }
     this.effects = []; // transient world objects { mesh, until, update? }
     this.projectiles = [];
     this.zones = []; // damage/buff zones { pos, r, dps?, buff?, until, hostile }
@@ -654,12 +663,26 @@ export class Game {
       this.updateHud();
       return;
     }
-    if (this.cooldowns[slot] > t) return;
+    const st = this.abilityState[slot];
+    if (st.count <= 0) return; // no charges available
     const used = this.castBasic(slot);
     if (used === false) return; // ability declined (e.g. yoru E with no marker logic)
-    this.cooldowns[slot] = t + ab.cd;
+    st.count--;
+    st.pending.push(t + ab.cd); // this charge returns after its cooldown
+    st.pending.sort((a, b) => a - b);
+    this.cooldowns[slot] = st.pending[0]; // soonest recharge → HUD countdown
     this.sfx.play('ability');
     this.updateHud();
+  }
+
+  // Refund charges whose recharge timer has elapsed (parallel recharge).
+  updateAbilityCharges(t) {
+    for (const slot of ['C', 'Q', 'E']) {
+      const st = this.abilityState[slot];
+      if (!st) continue;
+      while (st.pending.length && st.pending[0] <= t) { st.pending.shift(); st.count = Math.min(st.count + 1, st.max); }
+      this.cooldowns[slot] = st.pending.length ? st.pending[0] : 0;
+    }
   }
 
   aimDir() { return new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion); }
@@ -948,6 +971,7 @@ export class Game {
       this.updateEffects(dt, t);
       this.updateZones(dt, t);
       this.updateUltState(t);
+      this.updateAbilityCharges(t);
       for (let i = 0; i < this.mixers.length; i++) this.mixers[i].update(dt);
       if (this.mouseDown && this.weapon.auto) this.tryShoot();
       if (this.reloading && t >= this.reloadEnd) { this.reloading = false; this.mag = this.weapon.mag; this.updateHud(); }
@@ -1195,6 +1219,6 @@ export class Game {
     document.getElementById('armor-fill').style.width = `${Math.max(0, this.armor) * 2}%`;
     document.getElementById('weapon-name').textContent = this.weapon.name;
     document.getElementById('ammo-mag').textContent = this.weapon === BLADE_STORM ? '∞' : this.mag;
-    this.cb.onAbilityHud(this.cooldowns, this.ultPoints, this.now());
+    this.cb.onAbilityHud(this.abilityState, this.ultPoints, this.now());
   }
 }
