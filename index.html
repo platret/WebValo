@@ -11,7 +11,10 @@
 <link rel="stylesheet" href="css/style.css" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><polygon points='10,15 45,15 45,85' fill='%23ff4655'/><polygon points='90,15 55,15 55,85' fill='%23ece8e1'/></svg>" />
 <script type="importmap">
-{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
 </script>
 </head>
 <body>
@@ -37,6 +40,7 @@
       <span class="btn-text">PLAY</span>
       <span class="btn-arrow">▸</span>
     </button>
+    <button id="btn-settings" class="btn-ghost landing-settings">⚙ SETTINGS</button>
     <div class="landing-hints">
       <span>WASD MOVE</span><i></i><span>SHIFT WALK</span><i></i><span>B BUY</span><i></i><span>Q / E / C / X ABILITIES</span>
     </div>
@@ -78,6 +82,17 @@
 <section id="screen-game" class="screen">
   <canvas id="game-canvas"></canvas>
 
+  <!-- LOADING -->
+  <div id="loading" class="loading hidden">
+    <div class="loading-box">
+      <div class="loading-mark"></div>
+      <h3 id="loading-title">DEPLOYING</h3>
+      <div class="loading-bar"><div class="loading-fill" id="loading-fill"></div></div>
+      <p class="mono" id="loading-status">LOADING ASSETS…</p>
+      <button id="btn-deploy" class="btn-primary hidden"><span class="btn-text">DEPLOY</span><span class="btn-arrow">▸</span></button>
+    </div>
+  </div>
+
   <!-- HUD -->
   <div id="hud" class="hud hidden">
     <div class="crosshair" id="crosshair"><i></i><i></i><i></i><i></i><b id="hitmarker"></b></div>
@@ -111,6 +126,8 @@
     </div>
 
     <div class="announce" id="announce"></div>
+    <div class="streak" id="streak"></div>
+    <div class="dmg-arrows" id="dmg-arrows"></div>
     <div class="damage-vignette" id="damage-vignette"></div>
     <div class="flash-overlay" id="flash-overlay"></div>
     <div class="ult-overlay" id="ult-overlay"></div>
@@ -131,6 +148,7 @@
     <div class="pause-box">
       <h3>PAUSED</h3>
       <button id="btn-resume" class="btn-primary"><span class="btn-text">RESUME</span><span class="btn-arrow">▸</span></button>
+      <button id="btn-settings-pause" class="btn-ghost">SETTINGS</button>
       <button id="btn-quit" class="btn-ghost">QUIT TO MENU</button>
     </div>
   </div>
@@ -143,6 +161,39 @@
     </div>
   </div>
 </section>
+
+<!-- ============ SETTINGS ============ -->
+<div id="settings-modal" class="settings-modal hidden">
+  <div class="settings-box">
+    <div class="settings-head"><h3>SETTINGS</h3><button id="btn-settings-close" class="btn-ghost">✕ CLOSE</button></div>
+
+    <div class="setting-row">
+      <label>MOUSE SENSITIVITY</label>
+      <input type="range" id="set-sens" min="0.2" max="3" step="0.05" />
+      <span class="set-val mono" id="set-sens-val">1.00</span>
+    </div>
+    <div class="setting-row">
+      <label>FIELD OF VIEW</label>
+      <input type="range" id="set-fov" min="70" max="103" step="1" />
+      <span class="set-val mono" id="set-fov-val">74</span>
+    </div>
+    <div class="setting-row">
+      <label>MASTER VOLUME</label>
+      <input type="range" id="set-vol" min="0" max="1" step="0.05" />
+      <span class="set-val mono" id="set-vol-val">100%</span>
+    </div>
+    <div class="setting-row toggle">
+      <label>REDUCED MOTION <small>screen shake &amp; flashes</small></label>
+      <button id="set-motion" class="set-switch" role="switch"><span></span></button>
+    </div>
+    <div class="setting-row toggle">
+      <label>SHOW FPS</label>
+      <button id="set-fps" class="set-switch" role="switch"><span></span></button>
+    </div>
+
+    <div class="settings-foot mono">SETTINGS SAVE AUTOMATICALLY</div>
+  </div>
+</div>
 
 <script type="module" src="js/main.js"></script>
 </body>

@@ -245,10 +245,12 @@ class Bot {
 
 // ---------------------------------------------------------------- engine
 export class Game {
-  constructor(canvas, agent, callbacks) {
+  constructor(canvas, agent, callbacks, models = null) {
     this.canvas = canvas;
     this.agent = agent;
     this.cb = callbacks; // { onQuit }
+    this.models = models; // preloaded glTF store (null → procedural fallback)
+    this.mixers = []; // active AnimationMixers (bots, decoy)
     this.sfx = new Sfx();
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -826,6 +828,7 @@ export class Game {
       this.updateEffects(dt, t);
       this.updateZones(dt, t);
       this.updateUltState(t);
+      for (let i = 0; i < this.mixers.length; i++) this.mixers[i].update(dt);
       if (this.mouseDown && this.weapon.auto) this.tryShoot();
       if (this.reloading && t >= this.reloadEnd) { this.reloading = false; this.mag = this.weapon.mag; this.updateHud(); }
     }

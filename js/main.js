@@ -3,6 +3,7 @@
 import { AGENTS, cardBackground, cardFigure } from './agents.js';
 import { WEAPONS, getWeapon } from './weapons.js';
 import { Game } from './game.js';
+import { preloadMatch } from './models.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -149,24 +150,52 @@ function onQuickBuy(index) {
 }
 
 // ---------------------------------------------------------------- match lifecycle
-function startMatch() {
+// Preload models behind a progress bar, then gate the actual launch behind a
+// DEPLOY click — pointer lock requires a fresh user gesture, which an awaited
+// preload would otherwise consume.
+async function startMatch() {
   showScreen('#screen-game');
-  $('#hud').classList.remove('hidden');
-  buildAbilityBar(selectedAgent);
-  buildBuyMenu();
+  const loading = $('#loading');
+  const fill = $('#loading-fill');
+  const status = $('#loading-status');
+  const title = $('#loading-title');
+  const deploy = $('#btn-deploy');
+  loading.classList.remove('hidden');
+  deploy.classList.add('hidden');
+  title.textContent = 'DEPLOYING';
+  status.textContent = 'STREAMING ASSETS…';
+  fill.style.width = '0%';
 
-  game = new Game($('#game-canvas'), selectedAgent, {
-    onKillFeed, onScore, onAnnounce, onAbilityHud, onQuickBuy,
-  });
-  window.__game = game; // debug handle
-  game.updateHud();
-  game.start();
+  let store = null;
+  try {
+    store = await preloadMatch(selectedAgent.id, (p) => { fill.style.width = `${Math.round(p * 100)}%`; });
+  } catch (e) {
+    console.warn('[match] model preload failed, using procedural fallback', e);
+  }
+  fill.style.width = '100%';
+  title.textContent = 'READY';
+  status.textContent = `${selectedAgent.name} // FORGE`;
+  deploy.classList.remove('hidden');
 
-  // ability cooldown ticker (cheap DOM updates outside the render loop)
-  clearInterval(window._hudTick);
-  window._hudTick = setInterval(() => {
-    if (game && game.running) onAbilityHud(game.cooldowns, game.ultPoints, game.now());
-  }, 250);
+  deploy.onclick = () => {
+    loading.classList.add('hidden');
+    $('#hud').classList.remove('hidden');
+    buildAbilityBar(selectedAgent);
+    buildBuyMenu();
+
+    game = new Game($('#game-canvas'), selectedAgent, {
+      onKillFeed, onScore, onAnnounce, onAbilityHud, onQuickBuy,
+    }, store);
+    window.__game = game; // debug handle
+    game.updateHud();
+    game.start();
+
+    // ability cooldown ticker (cheap DOM updates outside the render loop)
+    clearInterval(window._hudTick);
+    window._hudTick = setInterval(() => {
+      if (game && game.running) onAbilityHud(game.cooldowns, game.ultPoints, game.now());
+    }, 250);
+  };
 }
 
 function quitMatch() {
