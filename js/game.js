@@ -3,6 +3,8 @@
 
 import * as THREE from 'three';
 import { getWeapon, BLADE_STORM } from './weapons.js';
+import { CLIPS } from './models.js';
+import { settings } from './settings.js';
 
 const BOT_COUNT = 5;
 const PLAYER_HEIGHT = 1.7;
@@ -11,26 +13,69 @@ const GRAVITY = 22;
 const RESPAWN_DELAY = 3;
 
 // ---------------------------------------------------------------- audio
+// Per-weapon-class gunshot timbre (lowpass cutoff, length, level, low-end body).
+const SHOT_PROFILES = {
+  SIDEARM: { freq: 2600, len: 0.08, gain: 0.20, body: 0 },
+  SMG:     { freq: 2200, len: 0.06, gain: 0.16, body: 0 },
+  RIFLE:   { freq: 2900, len: 0.10, gain: 0.22, body: 150 },
+  SNIPER:  { freq: 1500, len: 0.24, gain: 0.30, body: 90 },
+  HEAVY:   { freq: 2050, len: 0.075, gain: 0.20, body: 120 },
+  ULT:     { freq: 3400, len: 0.05, gain: 0.10, body: 0 },
+};
+
 class Sfx {
-  constructor() { this.ctx = null; }
-  ensure() { if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); }
+  constructor() { this.ctx = null; this.master = null; }
+  ensure() {
+    if (!this.ctx) {
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      this.master = this.ctx.createGain();
+      this.master.connect(this.ctx.destination);
+    }
+  }
   // Short procedural blip — type shapes the envelope. No audio assets needed.
-  play(type) {
+  // `arg` carries the weapon (for 'shot') or the streak count (for 'streak').
+  play(type, arg = null) {
     try {
       this.ensure();
+      this.master.gain.value = settings.volume; // live master volume
       const ctx = this.ctx, t = ctx.currentTime;
       const gain = ctx.createGain();
-      gain.connect(ctx.destination);
+      gain.connect(this.master);
       if (type === 'shot' || type === 'botshot') {
-        const len = 0.09, buf = ctx.createBuffer(1, ctx.sampleRate * len, ctx.sampleRate);
+        // per-weapon timbre: filter cutoff, length, level and a low-end "body" thump
+        const prof = type === 'botshot' ? { freq: 1100, len: 0.09, gain: 0.08, body: 0 }
+          : (SHOT_PROFILES[arg && arg.type] || { freq: 2400, len: 0.09, gain: 0.22, body: 0 });
+        const jitter = 0.92 + Math.random() * 0.16; // subtle per-shot variation
+        const len = prof.len, buf = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * len)), ctx.sampleRate);
         const d = buf.getChannelData(0);
         for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2.2);
         const src = ctx.createBufferSource(); src.buffer = buf;
-        const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = type === 'shot' ? 2400 : 1100;
+        const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = prof.freq * jitter;
         src.connect(f); f.connect(gain);
-        gain.gain.setValueAtTime(type === 'shot' ? 0.22 : 0.08, t);
+        gain.gain.setValueAtTime(prof.gain, t);
         gain.gain.exponentialRampToValueAtTime(0.001, t + len);
         src.start(t);
+        if (prof.body) {
+          const o = ctx.createOscillator(); o.type = 'sine';
+          o.frequency.setValueAtTime(prof.body * jitter, t);
+          o.frequency.exponentialRampToValueAtTime(prof.body * 0.5, t + len);
+          const bg = ctx.createGain(); bg.connect(this.master);
+          bg.gain.setValueAtTime(prof.gain * 0.85, t); bg.gain.exponentialRampToValueAtTime(0.001, t + len * 1.4);
+          o.connect(bg); o.start(t); o.stop(t + len * 1.5);
+        }
+      } else if (type === 'streak') {
+        // ascending arpeggio — more notes / higher pitch for bigger streaks
+        const count = Math.min(arg || 2, 6), base = 520;
+        for (let i = 0; i < count; i++) {
+          const tt = t + i * 0.07;
+          const o = ctx.createOscillator(); o.type = 'triangle';
+          o.frequency.setValueAtTime(base * Math.pow(1.18, i), tt);
+          const og = ctx.createGain(); og.connect(this.master);
+          og.gain.setValueAtTime(0.0001, tt);
+          og.gain.exponentialRampToValueAtTime(0.12, tt + 0.01);
+          og.gain.exponentialRampToValueAtTime(0.001, tt + 0.14);
+          o.connect(og); o.start(tt); o.stop(tt + 0.16);
+        }
       } else if (type === 'hit') {
         const o = ctx.createOscillator(); o.type = 'square'; o.frequency.setValueAtTime(880, t);
         o.connect(gain); gain.gain.setValueAtTime(0.06, t); gain.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
@@ -178,42 +223,106 @@ function buildMap(scene) {
 // ---------------------------------------------------------------- bots
 const BOT_NAMES = ['REYNA-BOT', 'PHX-UNIT', 'OMEN-77', 'CYPHER.EXE', 'KAYO-MK2', 'VIPER-X', 'SAGE-9000'];
 
+// KayKit skeleton faces +Z; combined with group.lookAt this points it at its
+// target, so no extra yaw is needed.
+const BOT_MODEL_YAW = 0;
+const BOT_MODEL_H = 1.45; // skeleton stands this tall (chibi proportions)
+
 class Bot {
-  constructor(scene, spawn, name) {
+  constructor(scene, spawn, name, asset = null) {
     this.name = name;
     this.hp = 100;
     this.alive = true;
     this.respawnAt = 0;
+    this.hideAt = 0;
     this.shootCooldown = 0;
     this.wanderTarget = null;
     this.flashUntil = 0;
     this.speed = 3.2 + Math.random() * 1.2;
+    const hasModel = !!(asset && asset.model);
 
     const bodyMat = new THREE.MeshStandardMaterial({ color: 0xb8323e, roughness: 0.6, emissive: 0x550b12, emissiveIntensity: 0.6 });
     const headMat = new THREE.MeshStandardMaterial({ color: 0xff4655, roughness: 0.4, emissive: 0xff4655, emissiveIntensity: 0.35 });
 
     this.group = new THREE.Group();
-    this.body = new THREE.Mesh(new THREE.CapsuleGeometry(0.38, 0.85, 4, 10), bodyMat);
-    this.body.position.y = 0.85;
+    // Body + head double as the bullet hitboxes. When a glTF model is shown they
+    // become invisible (material.visible=false) but stay raycastable — so all the
+    // existing headshot logic keeps working unchanged. The chibi skeleton needs a
+    // big head sphere up over the skull and a short body; the procedural fallback
+    // keeps the original human-ish capsule that matches its visible shape.
+    // For the chibi skeleton, derive the hitbox from its height so it stays
+    // correct if BOT_MODEL_H changes: big head sphere over the skull (top ~30%),
+    // short body capsule over torso+legs. Procedural fallback keeps human-ish dims.
+    const H = BOT_MODEL_H;
+    const bodyR = hasModel ? 0.235 * H : 0.38, bodyCyl = hasModel ? 0.31 * H : 0.85, bodyY = hasModel ? 0.31 * H : 0.85;
+    const headR = hasModel ? 0.30 * H : 0.24, headY = hasModel ? 0.70 * H : 1.62;
+    this.body = new THREE.Mesh(new THREE.CapsuleGeometry(bodyR, bodyCyl, 4, 10), bodyMat);
+    this.body.position.y = bodyY;
     this.body.castShadow = true;
-    this.head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 12), headMat);
-    this.head.position.y = 1.62;
+    this.head = new THREE.Mesh(new THREE.SphereGeometry(headR, 12, 12), headMat);
+    this.head.position.y = headY;
     this.head.castShadow = true;
-    // visor stripe so the head reads as a face
-    const visor = new THREE.Mesh(
+    this.visor = new THREE.Mesh(
       new THREE.BoxGeometry(0.34, 0.07, 0.1),
       new THREE.MeshStandardMaterial({ color: 0x53d9d1, emissive: 0x53d9d1, emissiveIntensity: 1.4 })
     );
-    visor.position.set(0, 1.64, 0.2);
-    this.group.add(this.body, this.head, visor);
+    this.visor.position.set(0, 1.64, 0.2);
+    this.group.add(this.body, this.head, this.visor);
     this.body.userData.bot = this; this.body.userData.part = 'body';
     this.head.userData.bot = this; this.head.userData.part = 'head';
     this.group.position.copy(spawn);
+
+    // ---- animated glTF skeleton (optional visual) ----
+    this.mixer = null;
+    this.actions = {};
+    this.current = null;
+    this.skinMeshes = [];
+    if (hasModel) {
+      const m = asset.model;
+      // normalize height, feet on the ground
+      const h = new THREE.Box3().setFromObject(m).getSize(new THREE.Vector3()).y || 1.7;
+      m.scale.setScalar(BOT_MODEL_H / h);
+      m.position.y -= new THREE.Box3().setFromObject(m).min.y;
+      m.traverse((o) => { if (o.isMesh) this.skinMeshes.push(o); });
+      this.modelWrap = new THREE.Group();
+      this.modelWrap.rotation.y = BOT_MODEL_YAW;
+      this.modelWrap.add(m);
+      this.group.add(this.modelWrap);
+      // hide the hitbox meshes (still raycast — Raycaster honors Object3D.visible,
+      // which stays true; only the material is hidden)
+      for (const hb of [this.body, this.head, this.visor]) { hb.material.visible = false; hb.castShadow = false; }
+      this.mixer = new THREE.AnimationMixer(m);
+      for (const [key, clipName] of Object.entries(CLIPS)) {
+        const clip = asset.animations.find((a) => a.name === clipName);
+        if (clip) this.actions[key] = this.mixer.clipAction(clip);
+      }
+      this.playAction('idle');
+    }
     scene.add(this.group);
   }
 
+  // Crossfade to a named animation state.
+  playAction(key, { once = false } = {}) {
+    const a = this.actions[key];
+    if (!a || a === this.current) return;
+    a.reset().setEffectiveWeight(1);
+    a.setLoop(once ? THREE.LoopOnce : THREE.LoopRepeat, once ? 1 : Infinity);
+    a.clampWhenFinished = once;
+    a.fadeIn(0.18).play();
+    if (this.current) this.current.fadeOut(0.18);
+    this.current = a;
+  }
+
   setRevealed(on) {
-    // Recon reveal — render through walls with a hot outline-ish glow.
+    // Recon reveal — render through walls with a hot glow.
+    if (this.skinMeshes.length) {
+      for (const o of this.skinMeshes) {
+        o.material.depthTest = !on;
+        o.material.emissiveIntensity = on ? 2.4 : 0.5;
+        o.renderOrder = on ? 999 : 0;
+      }
+      return;
+    }
     for (const m of [this.body, this.head]) {
       m.material.depthTest = !on;
       m.material.emissiveIntensity = on ? 2.2 : (m === this.head ? 0.35 : 0.6);
@@ -230,8 +339,15 @@ class Bot {
 
   die() {
     this.alive = false;
-    this.respawnAt = performance.now() / 1000 + RESPAWN_DELAY + Math.random() * 2;
-    this.group.visible = false;
+    const now = performance.now() / 1000;
+    this.respawnAt = now + RESPAWN_DELAY + Math.random() * 2;
+    if (this.mixer) {
+      this.current = null; // force the crossfade
+      this.playAction('death', { once: true });
+      this.hideAt = now + 1.6; // linger so the death animation plays out
+    } else {
+      this.group.visible = false; // procedural fallback: vanish as before
+    }
   }
 
   respawn(spawn) {
@@ -239,16 +355,19 @@ class Bot {
     this.alive = true;
     this.group.position.copy(spawn);
     this.group.visible = true;
+    if (this.mixer) { this.current = null; this.playAction('idle'); }
     this.setRevealed(false);
   }
 }
 
 // ---------------------------------------------------------------- engine
 export class Game {
-  constructor(canvas, agent, callbacks) {
+  constructor(canvas, agent, callbacks, models = null) {
     this.canvas = canvas;
     this.agent = agent;
     this.cb = callbacks; // { onQuit }
+    this.models = models; // preloaded glTF store (null → procedural fallback)
+    this.mixers = []; // active AnimationMixers (bots, decoy)
     this.sfx = new Sfx();
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -259,12 +378,27 @@ export class Game {
     this.renderer.toneMappingExposure = 1.25;
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(74, 1, 0.05, 300);
+    this.baseFov = settings.fov;
+    this.camera = new THREE.PerspectiveCamera(this.baseFov, 1, 0.05, 300);
 
     const { colliders, shootables, spawnPoints } = buildMap(this.scene);
     this.colliders = colliders;
     this.shootables = shootables;
     this.spawnPoints = spawnPoints;
+    // LOS is blocked by walls/crates but not the floor plane — precompute once.
+    this.wallBlockers = shootables.filter((s) => s.geometry.type !== 'PlaneGeometry');
+
+    // pooling — reuse one raycaster, scratch vectors, and mesh pools to avoid
+    // per-shot/per-frame allocation (and the GC stutter it causes).
+    this.raycaster = new THREE.Raycaster();
+    this._v1 = new THREE.Vector3(); this._v2 = new THREE.Vector3(); this._v3 = new THREE.Vector3();
+    this._collBox = new THREE.Box3();
+    this._rayTargets = []; this._losTargets = [];
+    this.tracerMat = new THREE.LineBasicMaterial({ color: 0xffe2b0, transparent: true, opacity: 0.85 });
+    this.tracerPool = [];
+    this.impactGeo = new THREE.SphereGeometry(0.045, 6, 6);
+    this.impactMat = new THREE.MeshBasicMaterial({ color: 0xffc46b });
+    this.impactPool = [];
 
     // player state
     this.pos = new THREE.Vector3(0, PLAYER_HEIGHT, 24);
@@ -272,8 +406,10 @@ export class Game {
     this.yaw = 0; this.pitch = 0; // yaw 0 faces -z, toward arena center
     this.onGround = true;
     this.hp = 100; this.armor = 50;
+    this.money = 800; // credits — earn from kills, spend in the armory
     this.dead = false; this.deadUntil = 0;
     this.kills = 0; this.deaths = 0;
+    this.killStreak = 0; this.lastKillTime = -99;
     this.ultPoints = 0;
     this.fireRateMult = 1; // stim beacon
     this.invisible = false; // yoru ult
@@ -285,9 +421,19 @@ export class Game {
     this.reloading = false; this.reloadEnd = 0;
     this.lastShot = 0;
     this.recoilKick = 0;
+    this.shake = { until: 0, power: 0, dur: 0.001 }; // screen shake
 
-    // abilities
+    // abilities — each slot tracks charges that recharge independently in
+    // parallel (e.g. Raze's 2 Blast Packs: use one, it recharges while the other
+    // stays ready; use both, both recharge at once). `cooldowns` mirrors the
+    // soonest pending recharge time, kept only for the HUD countdown.
+    this.abilityState = {};
     this.cooldowns = { C: 0, Q: 0, E: 0 };
+    for (const slot of ['C', 'Q', 'E']) {
+      const ab = agent.abilities[slot];
+      const max = (ab && ab.charges) || 1;
+      this.abilityState[slot] = { count: max, max, cd: (ab && ab.cd) || 0, pending: [] };
+    }
     this.effects = []; // transient world objects { mesh, until, update? }
     this.projectiles = [];
     this.zones = []; // damage/buff zones { pos, r, dps?, buff?, until, hostile }
@@ -301,10 +447,13 @@ export class Game {
     this.running = false;
     this.clock = new THREE.Clock();
 
-    // bots
+    // bots — each gets its own tinted skeleton clone from the shared download
     this.bots = [];
     for (let i = 0; i < BOT_COUNT; i++) {
-      this.bots.push(new Bot(this.scene, this.randomSpawn(), BOT_NAMES[i % BOT_NAMES.length]));
+      const asset = this.models ? this.models.skeleton(0x6a1414) : null;
+      const bot = new Bot(this.scene, this.randomSpawn(), BOT_NAMES[i % BOT_NAMES.length], asset);
+      if (bot.mixer) this.mixers.push(bot.mixer);
+      this.bots.push(bot);
     }
 
     this.buildViewmodel();
@@ -322,9 +471,13 @@ export class Game {
     barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.03, -0.38);
     const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.074, 0.02, 0.3), accent);
     stripe.position.set(0, 0.045, -0.05);
+    // Procedural gun lives in its own group so it can hide when a glTF model loads.
+    this.procGun = new THREE.Group();
+    this.procGun.add(body, barrel, stripe);
+    this.gunMount = new THREE.Group(); // holds the loaded glTF weapon, if any
     this.muzzle = new THREE.PointLight(0xffd9a0, 0, 4);
     this.muzzle.position.set(0, 0.03, -0.55);
-    this.viewmodel.add(body, barrel, stripe, this.muzzle);
+    this.viewmodel.add(this.procGun, this.gunMount, this.muzzle);
     this.viewmodel.scale.setScalar(0.62);
     this.viewmodel.traverse((o) => { o.frustumCulled = false; });
     // Dedicated overlay pass: own scene + camera, rendered after the world with a depth clear.
@@ -334,7 +487,28 @@ export class Game {
     this.vmScene = new THREE.Scene();
     this.vmScene.add(this.viewmodel);
     this.vmScene.add(new THREE.HemisphereLight(0xbdd4e8, 0x46525e, 2.2));
+    const vmKey = new THREE.DirectionalLight(0xfff0dc, 2.4);
+    vmKey.position.set(0.6, 0.8, 0.4);
+    this.vmScene.add(vmKey);
     this.vmCamera = new THREE.PerspectiveCamera(62, 1, 0.01, 10);
+    this.setGunModel(this.weapon.id);
+  }
+
+  // Swap the first-person weapon to its glTF model; falls back to the procedural
+  // gun if there's no store or the model fails to load.
+  async setGunModel(weaponId) {
+    if (!this.models) return; // no store → keep procedural gun
+    let mount = null;
+    try { mount = await this.models.gun(weaponId); } catch { mount = null; }
+    if (!this.gunMount) return; // destroyed mid-load
+    this.gunMount.clear();
+    if (mount) {
+      this.gunMount.add(mount);
+      this.gunMount.traverse((o) => { o.frustumCulled = false; });
+      this.procGun.visible = false;
+    } else {
+      this.procGun.visible = true;
+    }
   }
 
   // ---------------- input
@@ -343,8 +517,9 @@ export class Game {
     this._onKeyUp = (e) => this.onKey(e, false);
     this._onMouseMove = (e) => {
       if (!this.locked() || this.paused) return;
-      this.yaw -= e.movementX * 0.0021;
-      this.pitch -= e.movementY * 0.0021;
+      const s = 0.0021 * settings.sens;
+      this.yaw -= e.movementX * s;
+      this.pitch -= e.movementY * s;
       this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch));
     };
     this._onMouseDown = (e) => { if (e.button === 0) { this.mouseDown = true; this.tryShoot(); } };
@@ -415,6 +590,7 @@ export class Game {
     this.running = true;
     this.lock();
     this.clock.start();
+    this.applySettings();
     this.loop();
     this.announce('MATCH START', false);
   }
@@ -430,6 +606,14 @@ export class Game {
     }
   }
 
+  // Re-read live settings (called when the settings menu changes a value).
+  applySettings() {
+    this.baseFov = settings.fov;
+    if (!this.aiming) { this.camera.fov = this.baseFov; this.camera.updateProjectionMatrix(); }
+    const fpsEl = document.getElementById('fps-meter');
+    if (fpsEl) fpsEl.classList.toggle('hidden', !settings.showFps);
+  }
+
   randomSpawn() {
     return this.spawnPoints[Math.floor(Math.random() * this.spawnPoints.length)].clone();
   }
@@ -439,8 +623,18 @@ export class Game {
     this.weapon = weapon;
     this.mag = weapon.mag;
     this.reloading = false;
+    this.setGunModel(weapon.id);
     this.sfx.play('reload');
     this.updateHud();
+  }
+
+  // Buy a weapon if affordable; deduct credits and equip. Returns true on success.
+  tryBuy(weapon) {
+    if (!weapon || weapon.id === this.weapon.id) return false; // already holding it
+    if (this.money < weapon.price) { this.sfx.play('hit'); return false; } // can't afford → buzz
+    this.money -= weapon.price;
+    this.equip(weapon);
+    return true;
   }
 
   startReload() {
@@ -468,25 +662,28 @@ export class Game {
     this.recoilKick = Math.min(this.recoilKick + this.weapon.recoil, 0.09);
     this.muzzle.intensity = 14;
     this.vmZ = -0.38;
-    this.sfx.play('shot');
+    this.sfx.play('shot', this.weapon);
     this.updateHud();
   }
 
   fireRay() {
     const moving = this.vel.lengthSq() > 4;
     const spread = this.weapon.spread * (moving ? 2.6 : 1) + this.recoilKick * 0.35;
-    const dir = new THREE.Vector3(0, 0, -1)
-      .applyQuaternion(this.camera.quaternion)
-      .add(new THREE.Vector3((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread, 0).applyQuaternion(this.camera.quaternion))
-      .normalize();
+    const dir = this._v1.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const jit = this._v2.set((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread, 0).applyQuaternion(this.camera.quaternion);
+    dir.add(jit).normalize();
 
-    const ray = new THREE.Raycaster(this.camera.getWorldPosition(new THREE.Vector3()), dir, 0, 200);
-    const botMeshes = this.bots.filter((b) => b.alive).flatMap((b) => [b.body, b.head]);
-    const hits = ray.intersectObjects([...this.shootables, ...botMeshes], false);
+    this.raycaster.set(this.camera.getWorldPosition(this._v3), dir);
+    this.raycaster.near = 0; this.raycaster.far = 200;
+    // reuse the target array instead of spreading new ones each shot
+    const targets = this._rayTargets; targets.length = 0;
+    for (let i = 0; i < this.shootables.length; i++) targets.push(this.shootables[i]);
+    for (const b of this.bots) if (b.alive) { targets.push(b.body, b.head); }
+    const hits = this.raycaster.intersectObjects(targets, false);
     const hit = hits[0];
 
-    const end = hit ? hit.point : ray.ray.at(120, new THREE.Vector3());
-    this.spawnTracer(ray.ray.origin, end);
+    const end = hit ? hit.point : this.raycaster.ray.at(120, this._v2);
+    this.spawnTracer(this.raycaster.ray.origin, end);
 
     if (hit && hit.object.userData.bot) {
       const bot = hit.object.userData.bot;
@@ -504,29 +701,44 @@ export class Game {
   onKill(bot, headshot) {
     this.kills++;
     this.ultPoints = Math.min(this.ultPoints + 1, this.agent.abilities.X.pts);
+    this.money = Math.min(this.money + (headshot ? 400 : 300), 9000); // kill reward
+    this.addShake(headshot ? 0.05 : 0.035, 0.16);
+    // kill streak — consecutive kills within a short window
+    const now = this.now();
+    this.killStreak = (now - this.lastKillTime < 4.5) ? this.killStreak + 1 : 1;
+    this.lastKillTime = now;
+    if (this.killStreak >= 2) {
+      this.sfx.play('streak', this.killStreak);
+      this.cb.onStreak?.(this.killStreak);
+    }
     this.cb.onKillFeed(`YOU`, bot.name, headshot, false);
     this.cb.onScore(this.kills, this.deaths);
     this.updateHud();
   }
 
   spawnTracer(from, to) {
-    const geo = new THREE.BufferGeometry().setFromPoints([
-      from.clone().add(new THREE.Vector3(0, -0.06, 0)), to,
-    ]);
-    const mat = new THREE.LineBasicMaterial({ color: 0xffe2b0, transparent: true, opacity: 0.85 });
-    const line = new THREE.Line(geo, mat);
-    this.scene.add(line);
-    this.effects.push({ mesh: line, until: this.now() + 0.05 });
+    let line = this.tracerPool.pop();
+    if (!line) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+      line = new THREE.Line(geo, this.tracerMat);
+      line.frustumCulled = false;
+      this.scene.add(line);
+    }
+    const pos = line.geometry.attributes.position;
+    pos.setXYZ(0, from.x, from.y - 0.06, from.z);
+    pos.setXYZ(1, to.x, to.y, to.z);
+    pos.needsUpdate = true;
+    line.visible = true;
+    this.effects.push({ mesh: line, until: this.now() + 0.05, pool: this.tracerPool });
   }
 
   spawnImpact(point) {
-    const m = new THREE.Mesh(
-      new THREE.SphereGeometry(0.045, 6, 6),
-      new THREE.MeshBasicMaterial({ color: 0xffc46b })
-    );
+    let m = this.impactPool.pop();
+    if (!m) { m = new THREE.Mesh(this.impactGeo, this.impactMat); this.scene.add(m); }
     m.position.copy(point);
-    this.scene.add(m);
-    this.effects.push({ mesh: m, until: this.now() + 0.18 });
+    m.visible = true;
+    this.effects.push({ mesh: m, until: this.now() + 0.18, pool: this.impactPool });
   }
 
   showHitmarker(kill) {
@@ -550,20 +762,35 @@ export class Game {
       this.updateHud();
       return;
     }
-    if (this.cooldowns[slot] > t) return;
+    const st = this.abilityState[slot];
+    if (st.count <= 0) return; // no charges available
     const used = this.castBasic(slot);
     if (used === false) return; // ability declined (e.g. yoru E with no marker logic)
-    this.cooldowns[slot] = t + ab.cd;
+    st.count--;
+    st.pending.push(t + ab.cd); // this charge returns after its cooldown
+    st.pending.sort((a, b) => a - b);
+    this.cooldowns[slot] = st.pending[0]; // soonest recharge → HUD countdown
     this.sfx.play('ability');
     this.updateHud();
+  }
+
+  // Refund charges whose recharge timer has elapsed (parallel recharge).
+  updateAbilityCharges(t) {
+    for (const slot of ['C', 'Q', 'E']) {
+      const st = this.abilityState[slot];
+      if (!st) continue;
+      while (st.pending.length && st.pending[0] <= t) { st.pending.shift(); st.count = Math.min(st.count + 1, st.max); }
+      this.cooldowns[slot] = st.pending.length ? st.pending[0] : 0;
+    }
   }
 
   aimDir() { return new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion); }
 
   aimPoint(maxDist = 60) {
-    const ray = new THREE.Raycaster(this.camera.getWorldPosition(new THREE.Vector3()), this.aimDir(), 0, maxDist);
-    const hits = ray.intersectObjects(this.shootables, false);
-    return hits[0] ? hits[0].point : ray.ray.at(maxDist, new THREE.Vector3());
+    this.raycaster.set(this.camera.getWorldPosition(this._v3), this.aimDir());
+    this.raycaster.near = 0; this.raycaster.far = maxDist;
+    const hits = this.raycaster.intersectObjects(this.shootables, false);
+    return hits[0] ? hits[0].point : this.raycaster.ray.at(maxDist, new THREE.Vector3());
   }
 
   castBasic(slot) {
@@ -746,11 +973,29 @@ export class Game {
   }
 
   deployDecoy() {
-    const mat = new THREE.MeshStandardMaterial({ color: 0x7d8cff, transparent: true, opacity: 0.75, emissive: 0x3b4bd8, emissiveIntensity: 0.6 });
-    const m = new THREE.Mesh(new THREE.CapsuleGeometry(0.38, 0.85, 4, 10), mat);
-    m.position.copy(this.pos).setY(0.85).add(this.flatAimDir().multiplyScalar(1.2));
+    let m = null, mixer = null;
+    // Use the agent's own glTF body as the decoy when available.
+    const c = this.models ? this.models.character() : null;
+    if (c && c.model) {
+      const model = c.model;
+      const h = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).y || 1.7;
+      model.scale.setScalar(1.6 / h);
+      model.position.y -= new THREE.Box3().setFromObject(model).min.y;
+      model.traverse((o) => { if (o.isMesh) { o.material.emissive = new THREE.Color(0x3b4bd8); o.material.emissiveIntensity = 0.8; o.frustumCulled = false; } });
+      m = new THREE.Group();
+      m.rotation.y = BOT_MODEL_YAW;
+      m.add(model);
+      const idle = c.animations.find((a) => a.name === CLIPS.idle);
+      if (idle) { mixer = new THREE.AnimationMixer(model); mixer.clipAction(idle).play(); this.mixers.push(mixer); }
+    }
+    if (!m) {
+      const mat = new THREE.MeshStandardMaterial({ color: 0x7d8cff, transparent: true, opacity: 0.75, emissive: 0x3b4bd8, emissiveIntensity: 0.6 });
+      m = new THREE.Mesh(new THREE.CapsuleGeometry(0.38, 0.85, 4, 10), mat);
+    }
+    const base = this.pos.clone().add(this.flatAimDir().multiplyScalar(1.2));
+    m.position.set(base.x, mixer ? 0 : 0.85, base.z);
     this.scene.add(m);
-    this.effects.push({ mesh: m, until: this.now() + 6, decoy: true, vel: this.flatAimDir().multiplyScalar(3) });
+    this.effects.push({ mesh: m, until: this.now() + 6, decoy: true, mixer, vel: this.flatAimDir().multiplyScalar(3) });
   }
 
   deployDrone() {
@@ -783,6 +1028,7 @@ export class Game {
     v.style.opacity = 1;
     clearTimeout(this._vt);
     this._vt = setTimeout(() => (v.style.opacity = 0), 280);
+    this.addShake(Math.min(0.06 + amount * 0.004, 0.16), 0.3);
     if (this.hp <= 0) this.die();
     this.updateHud();
   }
@@ -790,6 +1036,7 @@ export class Game {
   die() {
     this.dead = true;
     this.deaths++;
+    this.killStreak = 0;
     this.deadUntil = this.now() + RESPAWN_DELAY;
     document.getElementById('death-screen').classList.remove('hidden');
     document.exitPointerLock();
@@ -804,6 +1051,7 @@ export class Game {
     this.pos.copy(this.randomSpawn()).setY(PLAYER_HEIGHT);
     this.vel.set(0, 0, 0);
     document.getElementById('death-screen').classList.add('hidden');
+    if (this.weapon.id !== 'classic') this.equip(getWeapon('classic')); // drop your gun on death
     this.lock();
     this.updateHud();
   }
@@ -826,6 +1074,8 @@ export class Game {
       this.updateEffects(dt, t);
       this.updateZones(dt, t);
       this.updateUltState(t);
+      this.updateAbilityCharges(t);
+      for (let i = 0; i < this.mixers.length; i++) this.mixers[i].update(dt);
       if (this.mouseDown && this.weapon.auto) this.tryShoot();
       if (this.reloading && t >= this.reloadEnd) { this.reloading = false; this.mag = this.weapon.mag; this.updateHud(); }
     }
@@ -833,6 +1083,12 @@ export class Game {
     // camera
     this.camera.position.copy(this.pos);
     this.camera.quaternion.setFromEuler(new THREE.Euler(this.pitch + this.recoilKick, this.yaw, 0, 'YXZ'));
+    // screen shake — camera-local jitter that decays over its duration
+    if (!settings.reducedMotion && t < this.shake.until) {
+      const k = this.shake.power * (this.shake.until - t) / this.shake.dur;
+      this.camera.translateX((Math.random() - 0.5) * k);
+      this.camera.translateY((Math.random() - 0.5) * k);
+    }
     this.recoilKick = Math.max(0, this.recoilKick - dt * 0.35);
     this.muzzle.intensity = Math.max(0, this.muzzle.intensity - dt * 160);
     this.vmZ += (-0.45 - this.vmZ) * dt * 14;
@@ -848,6 +1104,26 @@ export class Game {
     this.renderer.autoClear = false;
     this.renderer.render(this.vmScene, this.vmCamera);
     this.renderer.autoClear = true;
+
+    if (settings.showFps) this.tickFps(dt);
+  }
+
+  // Screen-shake request — keeps the strongest active shake.
+  addShake(power, dur = 0.32) {
+    if (settings.reducedMotion) return;
+    const t = this.now();
+    if (t < this.shake.until && this.shake.power > power) return;
+    this.shake = { until: t + dur, power, dur };
+  }
+
+  tickFps(dt) {
+    this._fpsAcc = (this._fpsAcc || 0) + dt;
+    this._fpsFrames = (this._fpsFrames || 0) + 1;
+    if (this._fpsAcc >= 0.5) {
+      const el = document.getElementById('fps-meter');
+      if (el) el.textContent = `${Math.round(this._fpsFrames / this._fpsAcc)} FPS`;
+      this._fpsAcc = 0; this._fpsFrames = 0;
+    }
   }
 
   updatePlayer(dt, t) {
@@ -889,9 +1165,9 @@ export class Game {
   }
 
   collides(p) {
-    const min = new THREE.Vector3(p.x - PLAYER_RADIUS, p.y - PLAYER_HEIGHT, p.z - PLAYER_RADIUS);
-    const max = new THREE.Vector3(p.x + PLAYER_RADIUS, p.y + 0.1, p.z + PLAYER_RADIUS);
-    const me = new THREE.Box3(min, max);
+    const me = this._collBox;
+    me.min.set(p.x - PLAYER_RADIUS, p.y - PLAYER_HEIGHT, p.z - PLAYER_RADIUS);
+    me.max.set(p.x + PLAYER_RADIUS, p.y + 0.1, p.z + PLAYER_RADIUS);
     return this.colliders.some((c) => c.intersectsBox(me));
   }
 
@@ -901,6 +1177,7 @@ export class Game {
 
     for (const b of this.bots) {
       if (!b.alive) {
+        if (b.mixer && b.hideAt && t > b.hideAt) b.group.visible = false;
         if (t >= b.respawnAt) b.respawn(this.randomSpawn());
         continue;
       }
@@ -915,7 +1192,8 @@ export class Game {
       if (playerVisible && dist < 30) {
         // face & strafe-approach
         b.group.lookAt(this.pos.x, b.group.position.y, this.pos.z);
-        if (dist > 9) b.group.position.add(toTarget.normalize().multiplyScalar(b.speed * dt));
+        if (dist > 9) { b.group.position.add(toTarget.normalize().multiplyScalar(b.speed * dt)); b.playAction('run'); }
+        else b.playAction('idle');
         b.shootCooldown -= dt;
         if (b.shootCooldown <= 0 && dist < 26) {
           b.shootCooldown = 0.55 + Math.random() * 0.7;
@@ -932,6 +1210,7 @@ export class Game {
         const dir = b.wanderTarget.clone().setY(0).sub(b.group.position.clone().setY(0)).normalize();
         b.group.position.add(dir.multiplyScalar(b.speed * 0.55 * dt));
         b.group.lookAt(b.wanderTarget.x, b.group.position.y, b.wanderTarget.z);
+        b.playAction('run');
       }
 
       // keep inside arena
@@ -941,15 +1220,17 @@ export class Game {
   }
 
   hasLineOfSight(bot) {
-    const from = bot.group.position.clone().setY(1.5);
-    const to = this.pos.clone();
-    const dir = to.clone().sub(from);
+    const from = this._v1.copy(bot.group.position); from.y = 1.5;
+    const dir = this._v2.copy(this.pos).sub(from);
     const dist = dir.length();
     dir.normalize();
-    const ray = new THREE.Raycaster(from, dir, 0, dist);
-    // blocked by walls or active smokes
-    const smokes = this.effects.filter((e) => e.smoke).map((e) => e.mesh);
-    return ray.intersectObjects([...this.shootables.filter((s) => s.geometry.type !== 'PlaneGeometry'), ...smokes], false).length === 0;
+    this.raycaster.set(from, dir);
+    this.raycaster.near = 0; this.raycaster.far = dist;
+    // blocked by walls/crates (precomputed, floor excluded) or active smokes
+    const targets = this._losTargets; targets.length = 0;
+    for (let i = 0; i < this.wallBlockers.length; i++) targets.push(this.wallBlockers[i]);
+    for (const e of this.effects) if (e.smoke) targets.push(e.mesh);
+    return this.raycaster.intersectObjects(targets, false).length === 0;
   }
 
   updateProjectiles(dt, t) {
@@ -985,6 +1266,8 @@ export class Game {
   explode(p) {
     this.sfx.play('boom');
     this.spawnExplosionVfx(p.mesh.position.clone(), p.radius * 0.6, p.color);
+    const pd = this.pos.distanceTo(p.mesh.position);
+    if (pd < 18) this.addShake(Math.min(0.22, (1 - pd / 18) * 0.26), 0.45);
     this.scene.remove(p.mesh);
     if (p.molly) {
       this.zones.push({ pos: p.mesh.position.clone().setY(0), r: p.radius, dps: 30, until: this.now() + 5, hostileToBots: true, mesh: this.spawnZoneVfx(p.mesh.position.clone().setY(0.06), p.radius, 0xe8744b) });
@@ -1005,7 +1288,7 @@ export class Game {
     for (let i = this.effects.length - 1; i >= 0; i--) {
       const e = this.effects[i];
       if (e.grow) e.mesh.scale.addScalar(dt * 4);
-      if (e.mesh.material.transparent && e.grow) e.mesh.material.opacity = Math.max(0, e.mesh.material.opacity - dt * 2);
+      if (e.grow && e.mesh.material && e.mesh.material.transparent) e.mesh.material.opacity = Math.max(0, e.mesh.material.opacity - dt * 2);
       if (e.decoy && e.vel) { e.mesh.position.add(e.vel.clone().multiplyScalar(dt)); e.vel.multiplyScalar(0.98); }
       if (e.drone && e.vel) {
         e.mesh.position.add(e.vel.clone().multiplyScalar(dt));
@@ -1016,7 +1299,9 @@ export class Game {
       }
       if (t >= e.until) {
         if (e.drone) for (const b of this.bots) { if (this.reveal.until < t) b.setRevealed(false); }
-        this.scene.remove(e.mesh);
+        if (e.mixer) { const mi = this.mixers.indexOf(e.mixer); if (mi >= 0) this.mixers.splice(mi, 1); }
+        if (e.pool) { e.mesh.visible = false; e.pool.push(e.mesh); } // return to pool, keep in scene
+        else this.scene.remove(e.mesh);
         this.effects.splice(i, 1);
       }
     }
@@ -1068,6 +1353,7 @@ export class Game {
     document.getElementById('armor-fill').style.width = `${Math.max(0, this.armor) * 2}%`;
     document.getElementById('weapon-name').textContent = this.weapon.name;
     document.getElementById('ammo-mag').textContent = this.weapon === BLADE_STORM ? '∞' : this.mag;
-    this.cb.onAbilityHud(this.cooldowns, this.ultPoints, this.now());
+    this.cb.onAbilityHud(this.abilityState, this.ultPoints, this.now());
+    this.cb.onMoney?.(this.money, this.weapon.id);
   }
 }

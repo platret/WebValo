@@ -24,7 +24,7 @@ export const AGENTS = [
     color2: '#d4502a',
     bio: 'Out of the painted alleys of Salvador, Raze brings the boom. Demolition is not a job to her — it is self-expression with a blast radius.',
     abilities: {
-      C: { name: 'BLAST PACK', icon: '🧨', desc: 'Satchel that launches you forward and upward. Rocket-jump anywhere.', cd: 7 },
+      C: { name: 'BLAST PACK', icon: '🧨', desc: 'Satchel that launches you forward and upward. Rocket-jump anywhere.', cd: 7, charges: 2 },
       Q: { name: 'PAINT SHELLS', icon: '✸', desc: 'Throw a cluster grenade. Big area damage on impact.', cd: 9 },
       E: { name: 'BOOM BOT', icon: '🤖', desc: 'Deploy a bot that rolls forward and detonates on the first enemy it finds.', cd: 12 },
       X: { name: 'SHOWSTOPPER', icon: '🚀', desc: 'Fire a rocket launcher round with massive area damage.', pts: 4 },
