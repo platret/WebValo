@@ -24,8 +24,8 @@ export const CLIPS = { idle: 'Idle', run: 'Running_A', death: 'Death_A', hit: 'H
 // pack's unknown intrinsic scale) so `len` is the target longest-axis length in
 // viewmodel-local units; bigger guns just get a bigger len. Orientation is a
 // fixed pack rotation (barrel toward -Z) plus the mount offset below.
-const PACK_ROT = [0, Math.PI / 2, 0]; // Quaternius guns model down +X → rotate to -Z
-const MOUNT_POS = [0.02, -0.02, -0.06]; // grip offset inside the viewmodel
+const PACK_ROT = [0, -Math.PI / 2, 0]; // Quaternius guns model along +X, muzzle -X → rotate muzzle to -Z
+const MOUNT_POS = [0, -0.02, -0.02]; // grip offset inside the viewmodel
 export const WEAPON_MODELS = {
   classic:  { file: 'Pistol_1.glb', len: 0.34 },
   shorty:   { file: 'Pistol_2.glb', len: 0.32 },

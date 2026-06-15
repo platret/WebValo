@@ -179,9 +179,10 @@ function buildMap(scene) {
 // ---------------------------------------------------------------- bots
 const BOT_NAMES = ['REYNA-BOT', 'PHX-UNIT', 'OMEN-77', 'CYPHER.EXE', 'KAYO-MK2', 'VIPER-X', 'SAGE-9000'];
 
-// KayKit characters face +Z; combined with group.lookAt this points them at
-// their target. Flip to 0 if a model ends up facing backwards.
-const BOT_MODEL_YAW = Math.PI;
+// KayKit skeleton faces +Z; combined with group.lookAt this points it at its
+// target, so no extra yaw is needed.
+const BOT_MODEL_YAW = 0;
+const BOT_MODEL_H = 1.45; // skeleton stands this tall (chibi proportions)
 
 class Bot {
   constructor(scene, spawn, name, asset = null) {
@@ -194,6 +195,7 @@ class Bot {
     this.wanderTarget = null;
     this.flashUntil = 0;
     this.speed = 3.2 + Math.random() * 1.2;
+    const hasModel = !!(asset && asset.model);
 
     const bodyMat = new THREE.MeshStandardMaterial({ color: 0xb8323e, roughness: 0.6, emissive: 0x550b12, emissiveIntensity: 0.6 });
     const headMat = new THREE.MeshStandardMaterial({ color: 0xff4655, roughness: 0.4, emissive: 0xff4655, emissiveIntensity: 0.35 });
@@ -201,12 +203,20 @@ class Bot {
     this.group = new THREE.Group();
     // Body + head double as the bullet hitboxes. When a glTF model is shown they
     // become invisible (material.visible=false) but stay raycastable — so all the
-    // existing headshot logic keeps working unchanged.
-    this.body = new THREE.Mesh(new THREE.CapsuleGeometry(0.38, 0.85, 4, 10), bodyMat);
-    this.body.position.y = 0.85;
+    // existing headshot logic keeps working unchanged. The chibi skeleton needs a
+    // big head sphere up over the skull and a short body; the procedural fallback
+    // keeps the original human-ish capsule that matches its visible shape.
+    // For the chibi skeleton, derive the hitbox from its height so it stays
+    // correct if BOT_MODEL_H changes: big head sphere over the skull (top ~30%),
+    // short body capsule over torso+legs. Procedural fallback keeps human-ish dims.
+    const H = BOT_MODEL_H;
+    const bodyR = hasModel ? 0.235 * H : 0.38, bodyCyl = hasModel ? 0.31 * H : 0.85, bodyY = hasModel ? 0.31 * H : 0.85;
+    const headR = hasModel ? 0.30 * H : 0.24, headY = hasModel ? 0.70 * H : 1.62;
+    this.body = new THREE.Mesh(new THREE.CapsuleGeometry(bodyR, bodyCyl, 4, 10), bodyMat);
+    this.body.position.y = bodyY;
     this.body.castShadow = true;
-    this.head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 12), headMat);
-    this.head.position.y = 1.62;
+    this.head = new THREE.Mesh(new THREE.SphereGeometry(headR, 12, 12), headMat);
+    this.head.position.y = headY;
     this.head.castShadow = true;
     this.visor = new THREE.Mesh(
       new THREE.BoxGeometry(0.34, 0.07, 0.1),
@@ -223,11 +233,11 @@ class Bot {
     this.actions = {};
     this.current = null;
     this.skinMeshes = [];
-    if (asset && asset.model) {
+    if (hasModel) {
       const m = asset.model;
-      // normalize to ~1.85 tall, feet on the ground
+      // normalize height, feet on the ground
       const h = new THREE.Box3().setFromObject(m).getSize(new THREE.Vector3()).y || 1.7;
-      m.scale.setScalar(1.85 / h);
+      m.scale.setScalar(BOT_MODEL_H / h);
       m.position.y -= new THREE.Box3().setFromObject(m).min.y;
       m.traverse((o) => { if (o.isMesh) this.skinMeshes.push(o); });
       this.modelWrap = new THREE.Group();
@@ -846,7 +856,7 @@ export class Game {
     if (c && c.model) {
       const model = c.model;
       const h = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).y || 1.7;
-      model.scale.setScalar(1.8 / h);
+      model.scale.setScalar(1.6 / h);
       model.position.y -= new THREE.Box3().setFromObject(model).min.y;
       model.traverse((o) => { if (o.isMesh) { o.material.emissive = new THREE.Color(0x3b4bd8); o.material.emissiveIntensity = 0.8; o.frustumCulled = false; } });
       m = new THREE.Group();
