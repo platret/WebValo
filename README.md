@@ -15,9 +15,9 @@ No install. No launcher. No queue. Just `index.html` and a pointer lock.
 
 ## ▸ What is this?
 
-WebValo is a fan-made, browser-native tribute to Valorant: pick one of **5 agents**, lock in on the map **FORGE**, buy anything from the armory with **unlimited credits**, and fight respawning AI combatants with full ability kits — smokes, dashes, teleports, recon bolts, and orbital lasers.
+WebValo is a fan-made, browser-native tribute to Valorant: pick one of **5 agents**, lock in on the map **FORGE**, earn credits by fragging and spend them in the armory, and fight respawning AI combatants — now **animated 3D skeletons** — with full ability kits: smokes, dashes, teleports, recon bolts, and orbital lasers.
 
-Everything is procedural: the map geometry, the agent card art, even the gunshot sounds (synthesized with the Web Audio API). There are **zero binary assets** in this repo.
+The map geometry, agent card art, and all sound design are procedural (Web Audio). The 3D weapon and character models stream at runtime from CC0 packs on a CDN — [Quaternius](https://quaternius.com) sci-fi guns and [KayKit](https://kaylousberg.com) skeletons — so the repo itself still ships **zero binary assets**. If a model fails to load, the engine falls back to its procedural shapes and plays on.
 
 ## ▸ Agents
 
@@ -37,16 +37,18 @@ Everything is procedural: the map geometry, the agent card art, even the gunshot
 | `Mouse` | Aim · `LMB` Fire |
 | `Space` | Jump · `Shift` Walk |
 | `R` | Reload |
-| `C` `Q` `E` | Abilities |
+| `C` `Q` `E` | Abilities (some, like Raze's Blast Pack, hold **2 charges**) |
 | `X` | Ultimate (charge by getting kills) |
-| `B` | Buy menu (unlimited credits — everything is free) |
+| `B` | Buy menu — spend your credits |
 | `1–9` | Quick-buy while armory is open |
 | `Esc` | Pause |
+
+⚙ A **settings** menu (landing page + pause) tunes mouse sensitivity, FOV, master volume, reduced-motion, and an FPS counter — all saved to `localStorage`.
 
 ## ▸ The Armory
 
 Classic · Shorty · Sheriff · Spectre · Bulldog · Phantom · Vandal · Operator · Odin.
-Real-ish damage models with headshot multipliers. Money is infinite, so is ammo reserve. Go wild.
+Real-ish damage models with headshot multipliers, each with its **own synthesized gunshot**. You start with 800 credits and earn more per kill (bonus for headshots) — buy up, and you drop back to the Classic when you die.
 
 ## ▸ Run it locally
 
@@ -63,10 +65,13 @@ python3 -m http.server 8000
 ## ▸ Tech
 
 - **Three.js r160** via CDN import map — no bundler, no `node_modules`
-- Pointer-lock FPS controller with per-axis AABB collision
-- Hitscan raycast weapons with spread, recoil & headshot hitboxes
+- Pointer-lock FPS controller with per-axis AABB collision, screen shake & weapon bob
+- Hitscan raycast weapons with spread, recoil & headshot hitboxes; per-weapon synthesized gunshots
+- **glTF models streamed at runtime** (`GLTFLoader` + `SkeletonUtils`) with `AnimationMixer`-driven idle/run/death bots — invisible raycast hitboxes keep headshots precise behind the chibi models, with procedural fallback on load failure
+- **Object pooling** — one shared `Raycaster`, scratch vectors, and tracer/impact mesh pools to avoid per-shot GC churn
 - Bot AI: line-of-sight checks (blocked by walls *and* smokes), wander/chase/shoot states, flash & decoy reactions
-- Procedural Web Audio sound design (gunshots, hits, explosions, ability chimes)
+- Multi-charge ability system, living credit economy, kill streaks, and persisted settings
+- Procedural Web Audio sound design (gunshots, hits, explosions, ability chimes, kill-streak fanfares)
 - Pure CSS UI — Valorant-style angular clip-paths, Anton + Rajdhani type, animated agent select
 
 ## ▸ Disclaimer
