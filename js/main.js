@@ -74,7 +74,7 @@ function buildBuyMenu() {
     item.className = 'buy-item';
     item.dataset.id = w.id;
     item.innerHTML = `
-      <div class="bi-top"><span class="bi-key">[${i + 1}]</span><span class="bi-price">$${w.price.toLocaleString()} → FREE</span></div>
+      <div class="bi-top"><span class="bi-key">[${i + 1}]</span><span class="bi-price">${w.price ? `$${w.price.toLocaleString()}` : 'FREE'}</span></div>
       <div class="bi-name">${w.name}</div>
       <div class="bi-stats">${w.type} · DMG ${w.dmg} · ${w.fireRate.toFixed(1)}/s · MAG ${w.mag}</div>`;
     item.addEventListener('click', () => buyWeapon(w.id));
@@ -84,9 +84,12 @@ function buildBuyMenu() {
 
 function buyWeapon(id) {
   if (!game) return;
-  game.equip(getWeapon(id));
-  document.querySelectorAll('.buy-item').forEach((el) =>
-    el.classList.toggle('equipped', el.dataset.id === id));
+  const ok = game.tryBuy(getWeapon(id));
+  if (ok) {
+    document.querySelectorAll('.buy-item').forEach((el) =>
+      el.classList.toggle('equipped', el.dataset.id === id));
+  }
+  // money + affordability refresh flow through onMoney() via the HUD update
 }
 
 // ---------------------------------------------------------------- HUD bridge
@@ -169,6 +172,20 @@ function onQuickBuy(index) {
   if (WEAPONS[index]) buyWeapon(WEAPONS[index].id);
 }
 
+// Reflect current credits in the HUD + buy menu, and gate affordability.
+function onMoney(money, weaponId) {
+  const txt = `$${money.toLocaleString()}`;
+  const m = $('#money'); if (m) m.textContent = txt;
+  document.querySelectorAll('.buy-money').forEach((el) => { el.textContent = txt; });
+  document.querySelectorAll('.buy-item').forEach((el) => {
+    const w = getWeapon(el.dataset.id);
+    if (!w) return;
+    const owned = w.id === weaponId;
+    el.classList.toggle('equipped', owned);
+    el.classList.toggle('cant-afford', !owned && money < w.price);
+  });
+}
+
 // ---------------------------------------------------------------- match lifecycle
 // Preload models behind a progress bar, then gate the actual launch behind a
 // DEPLOY click — pointer lock requires a fresh user gesture, which an awaited
@@ -204,7 +221,7 @@ async function startMatch() {
     buildBuyMenu();
 
     game = new Game($('#game-canvas'), selectedAgent, {
-      onKillFeed, onScore, onAnnounce, onAbilityHud, onQuickBuy, onStreak,
+      onKillFeed, onScore, onAnnounce, onAbilityHud, onQuickBuy, onStreak, onMoney,
     }, store);
     window.__game = game; // debug handle
     game.updateHud();

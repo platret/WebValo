@@ -392,6 +392,7 @@ export class Game {
     this.yaw = 0; this.pitch = 0; // yaw 0 faces -z, toward arena center
     this.onGround = true;
     this.hp = 100; this.armor = 50;
+    this.money = 800; // credits — earn from kills, spend in the armory
     this.dead = false; this.deadUntil = 0;
     this.kills = 0; this.deaths = 0;
     this.killStreak = 0; this.lastKillTime = -99;
@@ -613,6 +614,15 @@ export class Game {
     this.updateHud();
   }
 
+  // Buy a weapon if affordable; deduct credits and equip. Returns true on success.
+  tryBuy(weapon) {
+    if (!weapon || weapon.id === this.weapon.id) return false; // already holding it
+    if (this.money < weapon.price) { this.sfx.play('hit'); return false; } // can't afford → buzz
+    this.money -= weapon.price;
+    this.equip(weapon);
+    return true;
+  }
+
   startReload() {
     if (this.reloading || this.mag === this.weapon.mag || this.weapon === BLADE_STORM) return;
     this.reloading = true;
@@ -674,6 +684,7 @@ export class Game {
   onKill(bot, headshot) {
     this.kills++;
     this.ultPoints = Math.min(this.ultPoints + 1, this.agent.abilities.X.pts);
+    this.money = Math.min(this.money + (headshot ? 400 : 300), 9000); // kill reward
     this.addShake(headshot ? 0.05 : 0.035, 0.16);
     // kill streak — consecutive kills within a short window
     const now = this.now();
@@ -1017,6 +1028,7 @@ export class Game {
     this.pos.copy(this.randomSpawn()).setY(PLAYER_HEIGHT);
     this.vel.set(0, 0, 0);
     document.getElementById('death-screen').classList.add('hidden');
+    if (this.weapon.id !== 'classic') this.equip(getWeapon('classic')); // drop your gun on death
     this.lock();
     this.updateHud();
   }
@@ -1316,5 +1328,6 @@ export class Game {
     document.getElementById('weapon-name').textContent = this.weapon.name;
     document.getElementById('ammo-mag').textContent = this.weapon === BLADE_STORM ? '∞' : this.mag;
     this.cb.onAbilityHud(this.abilityState, this.ultPoints, this.now());
+    this.cb.onMoney?.(this.money, this.weapon.id);
   }
 }

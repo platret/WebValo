@@ -364,6 +364,9 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 }
 .buy-item:hover { border-color: var(--red); background: var(--ink-3); transform: translateY(-2px); }
 .buy-item.equipped { border-color: var(--teal); }
+.buy-item.cant-afford { opacity: .42; cursor: not-allowed; }
+.buy-item.cant-afford:hover { transform: none; border-color: rgba(236,232,225,.1); background: var(--ink-2); }
+.buy-item.cant-afford .bi-price { color: var(--red); }
 .buy-item .bi-top { display: flex; justify-content: space-between; align-items: baseline; }
 .buy-item .bi-key { font-family: var(--font-mono); font-size: .6rem; color: var(--red); }
 .buy-item .bi-name { font-family: var(--font-display); font-size: 1.05rem; letter-spacing: .08em; }
