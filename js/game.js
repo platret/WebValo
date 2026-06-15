@@ -385,6 +385,20 @@ export class Game {
     this.colliders = colliders;
     this.shootables = shootables;
     this.spawnPoints = spawnPoints;
+    // LOS is blocked by walls/crates but not the floor plane — precompute once.
+    this.wallBlockers = shootables.filter((s) => s.geometry.type !== 'PlaneGeometry');
+
+    // pooling — reuse one raycaster, scratch vectors, and mesh pools to avoid
+    // per-shot/per-frame allocation (and the GC stutter it causes).
+    this.raycaster = new THREE.Raycaster();
+    this._v1 = new THREE.Vector3(); this._v2 = new THREE.Vector3(); this._v3 = new THREE.Vector3();
+    this._collBox = new THREE.Box3();
+    this._rayTargets = []; this._losTargets = [];
+    this.tracerMat = new THREE.LineBasicMaterial({ color: 0xffe2b0, transparent: true, opacity: 0.85 });
+    this.tracerPool = [];
+    this.impactGeo = new THREE.SphereGeometry(0.045, 6, 6);
+    this.impactMat = new THREE.MeshBasicMaterial({ color: 0xffc46b });
+    this.impactPool = [];
 
     // player state
     this.pos = new THREE.Vector3(0, PLAYER_HEIGHT, 24);
@@ -655,18 +669,21 @@ export class Game {
   fireRay() {
     const moving = this.vel.lengthSq() > 4;
     const spread = this.weapon.spread * (moving ? 2.6 : 1) + this.recoilKick * 0.35;
-    const dir = new THREE.Vector3(0, 0, -1)
-      .applyQuaternion(this.camera.quaternion)
-      .add(new THREE.Vector3((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread, 0).applyQuaternion(this.camera.quaternion))
-      .normalize();
+    const dir = this._v1.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    const jit = this._v2.set((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread, 0).applyQuaternion(this.camera.quaternion);
+    dir.add(jit).normalize();
 
-    const ray = new THREE.Raycaster(this.camera.getWorldPosition(new THREE.Vector3()), dir, 0, 200);
-    const botMeshes = this.bots.filter((b) => b.alive).flatMap((b) => [b.body, b.head]);
-    const hits = ray.intersectObjects([...this.shootables, ...botMeshes], false);
+    this.raycaster.set(this.camera.getWorldPosition(this._v3), dir);
+    this.raycaster.near = 0; this.raycaster.far = 200;
+    // reuse the target array instead of spreading new ones each shot
+    const targets = this._rayTargets; targets.length = 0;
+    for (let i = 0; i < this.shootables.length; i++) targets.push(this.shootables[i]);
+    for (const b of this.bots) if (b.alive) { targets.push(b.body, b.head); }
+    const hits = this.raycaster.intersectObjects(targets, false);
     const hit = hits[0];
 
-    const end = hit ? hit.point : ray.ray.at(120, new THREE.Vector3());
-    this.spawnTracer(ray.ray.origin, end);
+    const end = hit ? hit.point : this.raycaster.ray.at(120, this._v2);
+    this.spawnTracer(this.raycaster.ray.origin, end);
 
     if (hit && hit.object.userData.bot) {
       const bot = hit.object.userData.bot;
@@ -700,23 +717,28 @@ export class Game {
   }
 
   spawnTracer(from, to) {
-    const geo = new THREE.BufferGeometry().setFromPoints([
-      from.clone().add(new THREE.Vector3(0, -0.06, 0)), to,
-    ]);
-    const mat = new THREE.LineBasicMaterial({ color: 0xffe2b0, transparent: true, opacity: 0.85 });
-    const line = new THREE.Line(geo, mat);
-    this.scene.add(line);
-    this.effects.push({ mesh: line, until: this.now() + 0.05 });
+    let line = this.tracerPool.pop();
+    if (!line) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+      line = new THREE.Line(geo, this.tracerMat);
+      line.frustumCulled = false;
+      this.scene.add(line);
+    }
+    const pos = line.geometry.attributes.position;
+    pos.setXYZ(0, from.x, from.y - 0.06, from.z);
+    pos.setXYZ(1, to.x, to.y, to.z);
+    pos.needsUpdate = true;
+    line.visible = true;
+    this.effects.push({ mesh: line, until: this.now() + 0.05, pool: this.tracerPool });
   }
 
   spawnImpact(point) {
-    const m = new THREE.Mesh(
-      new THREE.SphereGeometry(0.045, 6, 6),
-      new THREE.MeshBasicMaterial({ color: 0xffc46b })
-    );
+    let m = this.impactPool.pop();
+    if (!m) { m = new THREE.Mesh(this.impactGeo, this.impactMat); this.scene.add(m); }
     m.position.copy(point);
-    this.scene.add(m);
-    this.effects.push({ mesh: m, until: this.now() + 0.18 });
+    m.visible = true;
+    this.effects.push({ mesh: m, until: this.now() + 0.18, pool: this.impactPool });
   }
 
   showHitmarker(kill) {
@@ -765,9 +787,10 @@ export class Game {
   aimDir() { return new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion); }
 
   aimPoint(maxDist = 60) {
-    const ray = new THREE.Raycaster(this.camera.getWorldPosition(new THREE.Vector3()), this.aimDir(), 0, maxDist);
-    const hits = ray.intersectObjects(this.shootables, false);
-    return hits[0] ? hits[0].point : ray.ray.at(maxDist, new THREE.Vector3());
+    this.raycaster.set(this.camera.getWorldPosition(this._v3), this.aimDir());
+    this.raycaster.near = 0; this.raycaster.far = maxDist;
+    const hits = this.raycaster.intersectObjects(this.shootables, false);
+    return hits[0] ? hits[0].point : this.raycaster.ray.at(maxDist, new THREE.Vector3());
   }
 
   castBasic(slot) {
@@ -1142,9 +1165,9 @@ export class Game {
   }
 
   collides(p) {
-    const min = new THREE.Vector3(p.x - PLAYER_RADIUS, p.y - PLAYER_HEIGHT, p.z - PLAYER_RADIUS);
-    const max = new THREE.Vector3(p.x + PLAYER_RADIUS, p.y + 0.1, p.z + PLAYER_RADIUS);
-    const me = new THREE.Box3(min, max);
+    const me = this._collBox;
+    me.min.set(p.x - PLAYER_RADIUS, p.y - PLAYER_HEIGHT, p.z - PLAYER_RADIUS);
+    me.max.set(p.x + PLAYER_RADIUS, p.y + 0.1, p.z + PLAYER_RADIUS);
     return this.colliders.some((c) => c.intersectsBox(me));
   }
 
@@ -1197,15 +1220,17 @@ export class Game {
   }
 
   hasLineOfSight(bot) {
-    const from = bot.group.position.clone().setY(1.5);
-    const to = this.pos.clone();
-    const dir = to.clone().sub(from);
+    const from = this._v1.copy(bot.group.position); from.y = 1.5;
+    const dir = this._v2.copy(this.pos).sub(from);
     const dist = dir.length();
     dir.normalize();
-    const ray = new THREE.Raycaster(from, dir, 0, dist);
-    // blocked by walls or active smokes
-    const smokes = this.effects.filter((e) => e.smoke).map((e) => e.mesh);
-    return ray.intersectObjects([...this.shootables.filter((s) => s.geometry.type !== 'PlaneGeometry'), ...smokes], false).length === 0;
+    this.raycaster.set(from, dir);
+    this.raycaster.near = 0; this.raycaster.far = dist;
+    // blocked by walls/crates (precomputed, floor excluded) or active smokes
+    const targets = this._losTargets; targets.length = 0;
+    for (let i = 0; i < this.wallBlockers.length; i++) targets.push(this.wallBlockers[i]);
+    for (const e of this.effects) if (e.smoke) targets.push(e.mesh);
+    return this.raycaster.intersectObjects(targets, false).length === 0;
   }
 
   updateProjectiles(dt, t) {
@@ -1275,7 +1300,8 @@ export class Game {
       if (t >= e.until) {
         if (e.drone) for (const b of this.bots) { if (this.reveal.until < t) b.setRevealed(false); }
         if (e.mixer) { const mi = this.mixers.indexOf(e.mixer); if (mi >= 0) this.mixers.splice(mi, 1); }
-        this.scene.remove(e.mesh);
+        if (e.pool) { e.mesh.visible = false; e.pool.push(e.mesh); } // return to pool, keep in scene
+        else this.scene.remove(e.mesh);
         this.effects.splice(i, 1);
       }
     }
