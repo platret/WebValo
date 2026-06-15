@@ -13,6 +13,16 @@ const GRAVITY = 22;
 const RESPAWN_DELAY = 3;
 
 // ---------------------------------------------------------------- audio
+// Per-weapon-class gunshot timbre (lowpass cutoff, length, level, low-end body).
+const SHOT_PROFILES = {
+  SIDEARM: { freq: 2600, len: 0.08, gain: 0.20, body: 0 },
+  SMG:     { freq: 2200, len: 0.06, gain: 0.16, body: 0 },
+  RIFLE:   { freq: 2900, len: 0.10, gain: 0.22, body: 150 },
+  SNIPER:  { freq: 1500, len: 0.24, gain: 0.30, body: 90 },
+  HEAVY:   { freq: 2050, len: 0.075, gain: 0.20, body: 120 },
+  ULT:     { freq: 3400, len: 0.05, gain: 0.10, body: 0 },
+};
+
 class Sfx {
   constructor() { this.ctx = null; this.master = null; }
   ensure() {
@@ -23,7 +33,8 @@ class Sfx {
     }
   }
   // Short procedural blip — type shapes the envelope. No audio assets needed.
-  play(type, weapon = null) {
+  // `arg` carries the weapon (for 'shot') or the streak count (for 'streak').
+  play(type, arg = null) {
     try {
       this.ensure();
       this.master.gain.value = settings.volume; // live master volume
@@ -31,15 +42,40 @@ class Sfx {
       const gain = ctx.createGain();
       gain.connect(this.master);
       if (type === 'shot' || type === 'botshot') {
-        const len = 0.09, buf = ctx.createBuffer(1, ctx.sampleRate * len, ctx.sampleRate);
+        // per-weapon timbre: filter cutoff, length, level and a low-end "body" thump
+        const prof = type === 'botshot' ? { freq: 1100, len: 0.09, gain: 0.08, body: 0 }
+          : (SHOT_PROFILES[arg && arg.type] || { freq: 2400, len: 0.09, gain: 0.22, body: 0 });
+        const jitter = 0.92 + Math.random() * 0.16; // subtle per-shot variation
+        const len = prof.len, buf = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * len)), ctx.sampleRate);
         const d = buf.getChannelData(0);
         for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2.2);
         const src = ctx.createBufferSource(); src.buffer = buf;
-        const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = type === 'shot' ? 2400 : 1100;
+        const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = prof.freq * jitter;
         src.connect(f); f.connect(gain);
-        gain.gain.setValueAtTime(type === 'shot' ? 0.22 : 0.08, t);
+        gain.gain.setValueAtTime(prof.gain, t);
         gain.gain.exponentialRampToValueAtTime(0.001, t + len);
         src.start(t);
+        if (prof.body) {
+          const o = ctx.createOscillator(); o.type = 'sine';
+          o.frequency.setValueAtTime(prof.body * jitter, t);
+          o.frequency.exponentialRampToValueAtTime(prof.body * 0.5, t + len);
+          const bg = ctx.createGain(); bg.connect(this.master);
+          bg.gain.setValueAtTime(prof.gain * 0.85, t); bg.gain.exponentialRampToValueAtTime(0.001, t + len * 1.4);
+          o.connect(bg); o.start(t); o.stop(t + len * 1.5);
+        }
+      } else if (type === 'streak') {
+        // ascending arpeggio — more notes / higher pitch for bigger streaks
+        const count = Math.min(arg || 2, 6), base = 520;
+        for (let i = 0; i < count; i++) {
+          const tt = t + i * 0.07;
+          const o = ctx.createOscillator(); o.type = 'triangle';
+          o.frequency.setValueAtTime(base * Math.pow(1.18, i), tt);
+          const og = ctx.createGain(); og.connect(this.master);
+          og.gain.setValueAtTime(0.0001, tt);
+          og.gain.exponentialRampToValueAtTime(0.12, tt + 0.01);
+          og.gain.exponentialRampToValueAtTime(0.001, tt + 0.14);
+          o.connect(og); o.start(tt); o.stop(tt + 0.16);
+        }
       } else if (type === 'hit') {
         const o = ctx.createOscillator(); o.type = 'square'; o.frequency.setValueAtTime(880, t);
         o.connect(gain); gain.gain.setValueAtTime(0.06, t); gain.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
@@ -358,6 +394,7 @@ export class Game {
     this.hp = 100; this.armor = 50;
     this.dead = false; this.deadUntil = 0;
     this.kills = 0; this.deaths = 0;
+    this.killStreak = 0; this.lastKillTime = -99;
     this.ultPoints = 0;
     this.fireRateMult = 1; // stim beacon
     this.invisible = false; // yoru ult
@@ -601,7 +638,7 @@ export class Game {
     this.recoilKick = Math.min(this.recoilKick + this.weapon.recoil, 0.09);
     this.muzzle.intensity = 14;
     this.vmZ = -0.38;
-    this.sfx.play('shot');
+    this.sfx.play('shot', this.weapon);
     this.updateHud();
   }
 
@@ -638,6 +675,14 @@ export class Game {
     this.kills++;
     this.ultPoints = Math.min(this.ultPoints + 1, this.agent.abilities.X.pts);
     this.addShake(headshot ? 0.05 : 0.035, 0.16);
+    // kill streak — consecutive kills within a short window
+    const now = this.now();
+    this.killStreak = (now - this.lastKillTime < 4.5) ? this.killStreak + 1 : 1;
+    this.lastKillTime = now;
+    if (this.killStreak >= 2) {
+      this.sfx.play('streak', this.killStreak);
+      this.cb.onStreak?.(this.killStreak);
+    }
     this.cb.onKillFeed(`YOU`, bot.name, headshot, false);
     this.cb.onScore(this.kills, this.deaths);
     this.updateHud();
@@ -957,6 +1002,7 @@ export class Game {
   die() {
     this.dead = true;
     this.deaths++;
+    this.killStreak = 0;
     this.deadUntil = this.now() + RESPAWN_DELAY;
     document.getElementById('death-screen').classList.remove('hidden');
     document.exitPointerLock();

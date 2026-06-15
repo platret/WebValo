@@ -156,6 +156,15 @@ function onAnnounce(text, red) {
   if (red) el.classList.add('red');
 }
 
+const STREAK_LABELS = { 2: 'DOUBLE KILL', 3: 'TRIPLE KILL', 4: 'QUADRA KILL', 5: 'PENTA KILL' };
+function onStreak(count) {
+  const el = $('#streak');
+  el.textContent = count >= 6 ? `RAMPAGE ×${count}` : (STREAK_LABELS[count] || `${count} KILLS`);
+  el.classList.remove('show');
+  void el.offsetWidth;
+  el.classList.add('show');
+}
+
 function onQuickBuy(index) {
   if (WEAPONS[index]) buyWeapon(WEAPONS[index].id);
 }
@@ -195,7 +204,7 @@ async function startMatch() {
     buildBuyMenu();
 
     game = new Game($('#game-canvas'), selectedAgent, {
-      onKillFeed, onScore, onAnnounce, onAbilityHud, onQuickBuy,
+      onKillFeed, onScore, onAnnounce, onAbilityHud, onQuickBuy, onStreak,
     }, store);
     window.__game = game; // debug handle
     game.updateHud();
