@@ -324,9 +324,13 @@ export class Game {
     barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.03, -0.38);
     const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.074, 0.02, 0.3), accent);
     stripe.position.set(0, 0.045, -0.05);
+    // Procedural gun lives in its own group so it can hide when a glTF model loads.
+    this.procGun = new THREE.Group();
+    this.procGun.add(body, barrel, stripe);
+    this.gunMount = new THREE.Group(); // holds the loaded glTF weapon, if any
     this.muzzle = new THREE.PointLight(0xffd9a0, 0, 4);
     this.muzzle.position.set(0, 0.03, -0.55);
-    this.viewmodel.add(body, barrel, stripe, this.muzzle);
+    this.viewmodel.add(this.procGun, this.gunMount, this.muzzle);
     this.viewmodel.scale.setScalar(0.62);
     this.viewmodel.traverse((o) => { o.frustumCulled = false; });
     // Dedicated overlay pass: own scene + camera, rendered after the world with a depth clear.
@@ -336,7 +340,28 @@ export class Game {
     this.vmScene = new THREE.Scene();
     this.vmScene.add(this.viewmodel);
     this.vmScene.add(new THREE.HemisphereLight(0xbdd4e8, 0x46525e, 2.2));
+    const vmKey = new THREE.DirectionalLight(0xfff0dc, 2.4);
+    vmKey.position.set(0.6, 0.8, 0.4);
+    this.vmScene.add(vmKey);
     this.vmCamera = new THREE.PerspectiveCamera(62, 1, 0.01, 10);
+    this.setGunModel(this.weapon.id);
+  }
+
+  // Swap the first-person weapon to its glTF model; falls back to the procedural
+  // gun if there's no store or the model fails to load.
+  async setGunModel(weaponId) {
+    if (!this.models) return; // no store → keep procedural gun
+    let mount = null;
+    try { mount = await this.models.gun(weaponId); } catch { mount = null; }
+    if (!this.gunMount) return; // destroyed mid-load
+    this.gunMount.clear();
+    if (mount) {
+      this.gunMount.add(mount);
+      this.gunMount.traverse((o) => { o.frustumCulled = false; });
+      this.procGun.visible = false;
+    } else {
+      this.procGun.visible = true;
+    }
   }
 
   // ---------------- input
@@ -441,6 +466,7 @@ export class Game {
     this.weapon = weapon;
     this.mag = weapon.mag;
     this.reloading = false;
+    this.setGunModel(weapon.id);
     this.sfx.play('reload');
     this.updateHud();
   }

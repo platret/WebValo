@@ -20,20 +20,22 @@ const SKEL = `${GH}/KayKit-Game-Assets/KayKit-Character-Pack-Skeletons-1.0/addon
 // Shared KayKit rig clip names (identical across Adventurers + Skeletons packs).
 export const CLIPS = { idle: 'Idle', run: 'Running_A', death: 'Death_A', hit: 'Hit_A', shoot: '1H_Ranged_Shoot' };
 
-// Per-weapon gun model + local transform for the first-person overlay viewmodel.
-// pos/rot are applied to the model inside its mount group; game.js places the mount.
-// Tuned for the vmCamera (fov 62) and the existing mount at ~(0.26,-0.22,-0.45).
-const GUN_DEFAULT = { scale: 0.13, pos: [0, 0, 0.18], rot: [0, Math.PI / 2, 0] };
+// Per-weapon gun model. Each model is bbox-normalized at load (robust to the
+// pack's unknown intrinsic scale) so `len` is the target longest-axis length in
+// viewmodel-local units; bigger guns just get a bigger len. Orientation is a
+// fixed pack rotation (barrel toward -Z) plus the mount offset below.
+const PACK_ROT = [0, Math.PI / 2, 0]; // Quaternius guns model down +X → rotate to -Z
+const MOUNT_POS = [0.02, -0.02, -0.06]; // grip offset inside the viewmodel
 export const WEAPON_MODELS = {
-  classic:  { file: 'Pistol_1.glb', scale: 0.12 },
-  shorty:   { file: 'Pistol_2.glb', scale: 0.12 },
-  sheriff:  { file: 'Pistol_3.glb', scale: 0.13 },
-  spectre:  { file: 'SMG_1.glb',    scale: 0.13 },
-  bulldog:  { file: 'AR_2.glb',     scale: 0.14 },
-  phantom:  { file: 'AR_5.glb',     scale: 0.14 },
-  vandal:   { file: 'AR_1.glb',     scale: 0.14 },
-  operator: { file: 'Sniper_1.glb', scale: 0.15 },
-  odin:     { file: 'AR_6.glb',     scale: 0.15 },
+  classic:  { file: 'Pistol_1.glb', len: 0.34 },
+  shorty:   { file: 'Pistol_2.glb', len: 0.32 },
+  sheriff:  { file: 'Pistol_3.glb', len: 0.36 },
+  spectre:  { file: 'SMG_1.glb',    len: 0.46 },
+  bulldog:  { file: 'AR_2.glb',     len: 0.56 },
+  phantom:  { file: 'AR_5.glb',     len: 0.58 },
+  vandal:   { file: 'AR_1.glb',     len: 0.58 },
+  operator: { file: 'Sniper_1.glb', len: 0.66 },
+  odin:     { file: 'AR_6.glb',     len: 0.62 },
 };
 
 // Each agent gets a distinct KayKit body (used for the Gatecrash/Fakeout decoy,
@@ -101,13 +103,23 @@ export async function preloadMatch(agentId, onProgress) {
       const gltf = await load(`${GUNS}/${spec.file}`);
       if (!gltf) return null;
       const model = gltf.scene.clone(true);
-      const t = { ...GUN_DEFAULT, ...spec };
-      const mount = new THREE.Group();
-      model.scale.setScalar(t.scale);
-      model.position.fromArray(t.pos);
-      model.rotation.fromArray(t.rot);
       model.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = false; } });
-      mount.add(model);
+
+      // Normalize: recenter to origin, scale longest axis to `len`.
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const longest = Math.max(size.x, size.y, size.z) || 1;
+      model.position.sub(center);
+
+      const inner = new THREE.Group();   // applies normalized scale
+      inner.add(model);
+      inner.scale.setScalar((spec.len || 0.5) / longest);
+
+      const mount = new THREE.Group();   // applies orientation + grip offset
+      mount.add(inner);
+      mount.rotation.fromArray(spec.rot || PACK_ROT);
+      mount.position.fromArray(spec.pos || MOUNT_POS);
       return mount;
     },
     // A tinted, independently-materialed skeleton instance + its clips.
