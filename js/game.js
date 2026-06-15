@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { getWeapon, BLADE_STORM } from './weapons.js';
 import { CLIPS } from './models.js';
+import { settings } from './settings.js';
 
 const BOT_COUNT = 5;
 const PLAYER_HEIGHT = 1.7;
@@ -13,15 +14,22 @@ const RESPAWN_DELAY = 3;
 
 // ---------------------------------------------------------------- audio
 class Sfx {
-  constructor() { this.ctx = null; }
-  ensure() { if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)(); }
+  constructor() { this.ctx = null; this.master = null; }
+  ensure() {
+    if (!this.ctx) {
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      this.master = this.ctx.createGain();
+      this.master.connect(this.ctx.destination);
+    }
+  }
   // Short procedural blip — type shapes the envelope. No audio assets needed.
-  play(type) {
+  play(type, weapon = null) {
     try {
       this.ensure();
+      this.master.gain.value = settings.volume; // live master volume
       const ctx = this.ctx, t = ctx.currentTime;
       const gain = ctx.createGain();
-      gain.connect(ctx.destination);
+      gain.connect(this.master);
       if (type === 'shot' || type === 'botshot') {
         const len = 0.09, buf = ctx.createBuffer(1, ctx.sampleRate * len, ctx.sampleRate);
         const d = buf.getChannelData(0);
@@ -334,7 +342,8 @@ export class Game {
     this.renderer.toneMappingExposure = 1.25;
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(74, 1, 0.05, 300);
+    this.baseFov = settings.fov;
+    this.camera = new THREE.PerspectiveCamera(this.baseFov, 1, 0.05, 300);
 
     const { colliders, shootables, spawnPoints } = buildMap(this.scene);
     this.colliders = colliders;
@@ -360,6 +369,7 @@ export class Game {
     this.reloading = false; this.reloadEnd = 0;
     this.lastShot = 0;
     this.recoilKick = 0;
+    this.shake = { until: 0, power: 0, dur: 0.001 }; // screen shake
 
     // abilities — each slot tracks charges that recharge independently in
     // parallel (e.g. Raze's 2 Blast Packs: use one, it recharges while the other
@@ -455,8 +465,9 @@ export class Game {
     this._onKeyUp = (e) => this.onKey(e, false);
     this._onMouseMove = (e) => {
       if (!this.locked() || this.paused) return;
-      this.yaw -= e.movementX * 0.0021;
-      this.pitch -= e.movementY * 0.0021;
+      const s = 0.0021 * settings.sens;
+      this.yaw -= e.movementX * s;
+      this.pitch -= e.movementY * s;
       this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch));
     };
     this._onMouseDown = (e) => { if (e.button === 0) { this.mouseDown = true; this.tryShoot(); } };
@@ -527,6 +538,7 @@ export class Game {
     this.running = true;
     this.lock();
     this.clock.start();
+    this.applySettings();
     this.loop();
     this.announce('MATCH START', false);
   }
@@ -540,6 +552,14 @@ export class Game {
       this.vmCamera.aspect = w / h;
       this.vmCamera.updateProjectionMatrix();
     }
+  }
+
+  // Re-read live settings (called when the settings menu changes a value).
+  applySettings() {
+    this.baseFov = settings.fov;
+    if (!this.aiming) { this.camera.fov = this.baseFov; this.camera.updateProjectionMatrix(); }
+    const fpsEl = document.getElementById('fps-meter');
+    if (fpsEl) fpsEl.classList.toggle('hidden', !settings.showFps);
   }
 
   randomSpawn() {
@@ -617,6 +637,7 @@ export class Game {
   onKill(bot, headshot) {
     this.kills++;
     this.ultPoints = Math.min(this.ultPoints + 1, this.agent.abilities.X.pts);
+    this.addShake(headshot ? 0.05 : 0.035, 0.16);
     this.cb.onKillFeed(`YOU`, bot.name, headshot, false);
     this.cb.onScore(this.kills, this.deaths);
     this.updateHud();
@@ -928,6 +949,7 @@ export class Game {
     v.style.opacity = 1;
     clearTimeout(this._vt);
     this._vt = setTimeout(() => (v.style.opacity = 0), 280);
+    this.addShake(Math.min(0.06 + amount * 0.004, 0.16), 0.3);
     if (this.hp <= 0) this.die();
     this.updateHud();
   }
@@ -980,6 +1002,12 @@ export class Game {
     // camera
     this.camera.position.copy(this.pos);
     this.camera.quaternion.setFromEuler(new THREE.Euler(this.pitch + this.recoilKick, this.yaw, 0, 'YXZ'));
+    // screen shake — camera-local jitter that decays over its duration
+    if (!settings.reducedMotion && t < this.shake.until) {
+      const k = this.shake.power * (this.shake.until - t) / this.shake.dur;
+      this.camera.translateX((Math.random() - 0.5) * k);
+      this.camera.translateY((Math.random() - 0.5) * k);
+    }
     this.recoilKick = Math.max(0, this.recoilKick - dt * 0.35);
     this.muzzle.intensity = Math.max(0, this.muzzle.intensity - dt * 160);
     this.vmZ += (-0.45 - this.vmZ) * dt * 14;
@@ -995,6 +1023,26 @@ export class Game {
     this.renderer.autoClear = false;
     this.renderer.render(this.vmScene, this.vmCamera);
     this.renderer.autoClear = true;
+
+    if (settings.showFps) this.tickFps(dt);
+  }
+
+  // Screen-shake request — keeps the strongest active shake.
+  addShake(power, dur = 0.32) {
+    if (settings.reducedMotion) return;
+    const t = this.now();
+    if (t < this.shake.until && this.shake.power > power) return;
+    this.shake = { until: t + dur, power, dur };
+  }
+
+  tickFps(dt) {
+    this._fpsAcc = (this._fpsAcc || 0) + dt;
+    this._fpsFrames = (this._fpsFrames || 0) + 1;
+    if (this._fpsAcc >= 0.5) {
+      const el = document.getElementById('fps-meter');
+      if (el) el.textContent = `${Math.round(this._fpsFrames / this._fpsAcc)} FPS`;
+      this._fpsAcc = 0; this._fpsFrames = 0;
+    }
   }
 
   updatePlayer(dt, t) {
@@ -1135,6 +1183,8 @@ export class Game {
   explode(p) {
     this.sfx.play('boom');
     this.spawnExplosionVfx(p.mesh.position.clone(), p.radius * 0.6, p.color);
+    const pd = this.pos.distanceTo(p.mesh.position);
+    if (pd < 18) this.addShake(Math.min(0.22, (1 - pd / 18) * 0.26), 0.45);
     this.scene.remove(p.mesh);
     if (p.molly) {
       this.zones.push({ pos: p.mesh.position.clone().setY(0), r: p.radius, dps: 30, until: this.now() + 5, hostileToBots: true, mesh: this.spawnZoneVfx(p.mesh.position.clone().setY(0.06), p.radius, 0xe8744b) });

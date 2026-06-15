@@ -4,6 +4,7 @@ import { AGENTS, cardBackground, cardFigure } from './agents.js';
 import { WEAPONS, getWeapon } from './weapons.js';
 import { Game } from './game.js';
 import { preloadMatch } from './models.js';
+import { settings, saveSettings } from './settings.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -218,11 +219,39 @@ function quitMatch() {
   showScreen('#screen-agents');
 }
 
+// ---------------------------------------------------------------- settings
+function initSettingsUI() {
+  const sens = $('#set-sens'), sensV = $('#set-sens-val');
+  const fov = $('#set-fov'), fovV = $('#set-fov-val');
+  const vol = $('#set-vol'), volV = $('#set-vol-val');
+  const motion = $('#set-motion'), fps = $('#set-fps');
+
+  const syncSwitch = (el, on) => { el.classList.toggle('on', on); el.setAttribute('aria-checked', on); };
+  sens.value = settings.sens; sensV.textContent = settings.sens.toFixed(2);
+  fov.value = settings.fov; fovV.textContent = settings.fov;
+  vol.value = settings.volume; volV.textContent = `${Math.round(settings.volume * 100)}%`;
+  syncSwitch(motion, settings.reducedMotion);
+  syncSwitch(fps, settings.showFps);
+
+  const apply = () => { saveSettings(); if (game) game.applySettings(); };
+  sens.oninput = () => { settings.sens = +sens.value; sensV.textContent = settings.sens.toFixed(2); apply(); };
+  fov.oninput = () => { settings.fov = +fov.value; fovV.textContent = settings.fov; apply(); };
+  vol.oninput = () => { settings.volume = +vol.value; volV.textContent = `${Math.round(settings.volume * 100)}%`; apply(); };
+  motion.onclick = () => { settings.reducedMotion = !settings.reducedMotion; syncSwitch(motion, settings.reducedMotion); apply(); };
+  fps.onclick = () => { settings.showFps = !settings.showFps; syncSwitch(fps, settings.showFps); apply(); };
+}
+const openSettings = () => $('#settings-modal').classList.remove('hidden');
+const closeSettings = () => $('#settings-modal').classList.add('hidden');
+
 // ---------------------------------------------------------------- wiring
 $('#btn-play').addEventListener('click', () => showScreen('#screen-agents'));
 $('#btn-back-landing').addEventListener('click', () => showScreen('#screen-landing'));
 $('#btn-lock').addEventListener('click', () => { if (selectedAgent) startMatch(); });
 $('#btn-resume').addEventListener('click', () => game && game.setPaused(false));
 $('#btn-quit').addEventListener('click', quitMatch);
+$('#btn-settings').addEventListener('click', openSettings);
+$('#btn-settings-pause').addEventListener('click', openSettings);
+$('#btn-settings-close').addEventListener('click', closeSettings);
 
+initSettingsUI();
 buildAgentSelect();
